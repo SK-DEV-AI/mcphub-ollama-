@@ -1,0 +1,22 @@
+[tool.poetry]
+name = "mcp-central"
+version = "1.0.0"
+description = "A polished GUI for managing Smithery MCP servers and chatting with Ollama."
+authors = ["Your Name <your.email@example.com>"]
+license = "MIT"
+readme = "README.md"
+
+[tool.poetry.dependencies]
+python = "^3.10"
+pyqt6 = "^6.7.0"
+textual = "^0.80.0"
+keyring = "^25.3.0"
+requests = "^2.32.3"
+ollmcp = "^0.1.0"
+
+[tool.poetry.scripts]
+mcp-central-gui = "mcp_central.gui:main"
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"

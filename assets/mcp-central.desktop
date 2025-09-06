@@ -1,0 +1,7 @@
+[Desktop Entry]
+Name=MCP Central
+Exec=mcp-central-gui
+Icon=/usr/share/pixmaps/mcp-central.png
+Type=Application
+Categories=Development;
+Terminal=false
