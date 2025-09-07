@@ -237,7 +237,6 @@ class ConfigManager:
                 validated["modelConfig"]["repeat_penalty"] = model_config["repeat_penalty"] if model_config["repeat_penalty"] is not None else None
             if "presence_penalty" in model_config:
                 validated["modelConfig"]["presence_penalty"] = model_config["presence_penalty"] if model_config["presence_penalty"] is not None else None
-.
             if "frequency_penalty" in model_config:
                 validated["modelConfig"]["frequency_penalty"] = model_config["frequency_penalty"] if model_config["frequency_penalty"] is not None else None
             if "stop" in model_config:
