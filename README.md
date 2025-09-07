@@ -1,3 +1,3 @@
 # mcp-central
 
-A polished GUI for managing Smithery MCP servers and chatting with Ollama.
+A polished TUI for managing Smithery MCP servers and chatting with Ollama.
