@@ -6,8 +6,8 @@ from .config import load_config
 
 def run_smithery_command(cmd):
     try:
-        result = subprocess.run(['npx', '@smithery/cli'] + cmd, capture_output=True, text=True, check=False, env=os.environ)
-        if result.return_code != 0:
+        result = subprocess.run(['npx', '--yes', '@smithery/cli'] + cmd, capture_output=True, text=True, check=False, env=os.environ)
+        if result.returncode != 0:
             raise RuntimeError(result.stderr or result.stdout)
         return result.stdout.strip()
     except FileNotFoundError:
