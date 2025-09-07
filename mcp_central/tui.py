@@ -5,11 +5,11 @@ import json
 import tempfile
 from textual.app import App, ComposeResult
 from textual.screen import Screen
-from textual.widgets import Header, Footer, DataTable, TabbedContent, TabPane, Button, Log, Input, Label
+from textual.widgets import Header, Footer, DataTable, TabbedContent, TabPane, Button, Log, Input, Label, LoadingIndicator
 from textual.containers import Horizontal, Vertical, Container
 from rich.panel import Panel
 from .utils import list_installed_servers, get_registry_servers, install_server, uninstall_server, get_server_env_vars
-from .config import load_config, save_config, get_secret, set_secret, delete_secret, is_secret, init_keyring
+from .config import load_config, save_config, get_secret, set_secret, delete_secret, is_secret, init_keyring, CONFIG_DIR
 import os
 import ollama
 from contextlib import AsyncExitStack
@@ -22,7 +22,10 @@ from mcp_client_for_ollama.utils.streaming import StreamingManager
 from mcp_client_for_ollama.utils.tool_display import ToolDisplayManager
 from mcp_client_for_ollama.utils.hil_manager import HumanInTheLoopManager
 
-logging.basicConfig(filename="app.log", level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+# Ensure the config directory exists and set up logging there
+CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+LOG_FILE = CONFIG_DIR / 'app.log'
+logging.basicConfig(filename=LOG_FILE, level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
 class InputScreen(Screen):
     """A screen to get input from the user."""
@@ -88,7 +91,8 @@ class MCPCentralTUI(App):
     def compose(self) -> ComposeResult:
         """Create child widgets for the app."""
         yield Header()
-        with TabbedContent(initial="installed"):
+        yield LoadingIndicator()
+        with TabbedContent(initial="installed", id="main_tabs"):
             with TabPane("Installed Servers", id="installed"):
                 with Horizontal():
                     yield DataTable(id="server_table")
@@ -118,17 +122,22 @@ class MCPCentralTUI(App):
                 yield Input(placeholder="Enter your query...", id="chat_input")
         yield Footer()
 
+    async def load_initial_data(self):
+        """Load servers and registry data in the background."""
+        self.action_refresh_servers()
+        self.action_refresh_registry()
+        await self.query_one(LoadingIndicator).remove()
+
     def on_mount(self) -> None:
         """Called when the app is mounted."""
         logging.info("App mounted successfully.")
         init_keyring()
         logging.info("Keyring initialized.")
-        self.action_refresh_servers()
         self.set_interval(1, self.update_logs)
-        self.action_refresh_registry()
-        logging.info("Initial data refresh actions called.")
         # Pass the textual log widget to the streaming manager now that it's mounted
         self.streaming_manager.textual_log = self.query_one("#chat_log")
+        # Load data in a background worker
+        self.run_worker(self.load_initial_data)
 
     def on_data_table_row_selected(self, event: DataTable.RowSelected) -> None:
         """Called when a row in the DataTable is selected."""
@@ -294,7 +303,7 @@ class MCPCentralTUI(App):
 
             model = self.model_manager.get_current_model()
             model_options = {} # Simplified for now
-
+            
             chat_params = {
                 "model": model,
                 "messages": messages,
@@ -304,7 +313,7 @@ class MCPCentralTUI(App):
             }
 
             stream = await self.ollama.chat(**chat_params)
-
+            
             response_text, tool_calls, metrics = await self.streaming_manager.process_streaming_response(
                 stream, print_response=True, thinking_mode=False, show_thinking=False, show_metrics=False
             )
@@ -315,13 +324,13 @@ class MCPCentralTUI(App):
                     tool_name = tool.function.name
                     tool_args = tool.function.arguments
                     server_name, actual_tool_name = tool_name.split('.', 1) if '.' in tool_name else (None, tool_name)
-
+                    
                     if not server_name or server_name not in self.chat_sessions:
                         log.write(f"[red]Error: Unknown server for tool {tool_name}[/red]")
                         continue
 
                     log.write(f"Calling tool: {tool_name} with args: {tool_args}")
-
+                    
                     result = await self.chat_sessions[server_name].call_tool(actual_tool_name, tool_args)
                     tool_response = f"{result.content[0].text}"
                     log.write(f"Tool response: {tool_response}")
