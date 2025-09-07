@@ -73,6 +73,7 @@ class MCPCentralTUI(App):
                         yield Button("View Logs", id="logs_button", disabled=True)
                         yield Button("Uninstall", id="uninstall_button", disabled=True)
                         yield Button("Launch Chat", id="launch_chat_button", disabled=True)
+                        yield Button("Set Custom File", id="set_custom_file_button")
             with TabPane("Registry", id="registry"):
                 with Vertical():
                     yield Input(placeholder="Search registry...", id="registry_search")
@@ -113,24 +114,38 @@ class MCPCentralTUI(App):
 
 
     def update_installed_buttons(self):
+        is_custom_server = False
+        if self.selected_server:
+            table = self.query_one("#server_table")
+            # Ensure the cursor row is valid before getting cell data
+            if table.row_count > 0 and 0 <= table.cursor_row < table.row_count:
+                try:
+                    source = table.get_cell_at((table.cursor_row, 2))
+                    is_custom_server = (source == "Custom")
+                except Exception:
+                    # In case of any issue, assume not a custom server for safety
+                    is_custom_server = False
+
         # Update context-sensitive buttons based on selected server
         if self.selected_server:
             is_running = self.selected_server in self.running_processes
-            self.query_one("#start_button").disabled = is_running
-            self.query_one("#stop_button").disabled = not is_running
-            self.query_one("#logs_button").disabled = False
-            self.query_one("#uninstall_button").disabled = is_running
+            self.query_one("#start_button").disabled = is_running or is_custom_server
+            self.query_one("#stop_button").disabled = not is_running or is_custom_server
+            # Logs are only available for servers this app runs (Smithery servers)
+            self.query_one("#logs_button").disabled = not (self.selected_server in self.server_logs)
+            self.query_one("#uninstall_button").disabled = is_running or is_custom_server
         else:
             self.query_one("#start_button").disabled = True
             self.query_one("#stop_button").disabled = True
             self.query_one("#logs_button").disabled = True
             self.query_one("#uninstall_button").disabled = True
 
-        # Update "Launch Chat" button based on any running server
+        # Update "Launch Chat" button based on any running server or custom servers
         any_server_running_with_url = any(
             url for _, url in self.running_processes.values() if url
         )
-        self.query_one("#launch_chat_button").disabled = not any_server_running_with_url
+        custom_file_exists = self.config.get('custom_servers_file') and os.path.exists(self.config['custom_servers_file'])
+        self.query_one("#launch_chat_button").disabled = not (any_server_running_with_url or custom_file_exists)
 
     def update_env_tab(self):
         table = self.query_one("#env_table")
@@ -145,16 +160,45 @@ class MCPCentralTUI(App):
                 display_value = "(hidden)" if is_secret(var) and value else value or ""
                 table.add_row(var, display_value)
 
+    def get_all_servers(self) -> list[str]:
+        """Gets a unified list of servers from Smithery CLI and the custom JSON file."""
+        # Get servers from Smithery
+        servers = set(list_installed_servers())
+
+        # Get servers from custom file
+        custom_file_path = self.config.get('custom_servers_file')
+        if custom_file_path and os.path.exists(custom_file_path):
+            try:
+                with open(custom_file_path, 'r') as f:
+                    custom_data = json.load(f)
+                    # Expecting a dict of servers, like ollmcp's format
+                    if isinstance(custom_data, dict) and "mcpServers" in custom_data:
+                        custom_servers = custom_data["mcpServers"].keys()
+                        servers.update(custom_servers)
+            except (json.JSONDecodeError, IOError) as e:
+                logging.error(f"Error reading custom servers file {custom_file_path}: {e}")
+                self.bell()
+
+        return sorted(list(servers))
+
     def action_refresh_servers(self) -> None:
         """An action to refresh the list of installed servers."""
         logging.info("Refreshing servers")
         table = self.query_one("#server_table")
         table.clear(columns=True)
-        table.add_columns("Server Name", "Status")
-        servers = list_installed_servers()
-        for server in servers:
-            status = "Running" if server in self.running_processes else "Stopped"
-            table.add_row(server, status)
+        table.add_columns("Server Name", "Status", "Source")
+
+        smithery_servers = set(list_installed_servers())
+        all_servers = self.get_all_servers()
+
+        for server in all_servers:
+            status = "Running" if server in self.running_processes else "N/A"
+            source = "Smithery" if server in smithery_servers else "Custom"
+            # For Smithery servers, we know the status
+            if source == "Smithery":
+                status = "Running" if server in self.running_processes else "Stopped"
+
+            table.add_row(server, status, source)
         self.update_installed_buttons()
 
     def on_input_submitted(self, event: Input.Submitted) -> None:
@@ -196,33 +240,71 @@ class MCPCentralTUI(App):
             self.clear_env_var()
         elif event.button.id == "launch_chat_button":
             self.launch_chat()
+        elif event.button.id == "set_custom_file_button":
+            self.set_custom_servers_file()
+
+    def set_custom_servers_file(self):
+        """Opens a prompt to set the path for the custom servers JSON file."""
+        current_path = self.config.get('custom_servers_file', '')
+
+        def on_submit(new_path: str):
+            if os.path.exists(new_path) and new_path.endswith('.json'):
+                self.config['custom_servers_file'] = new_path
+                save_config(self.config)
+                logging.info(f"Custom servers file set to: {new_path}")
+                self.action_refresh_servers()  # Refresh the server list to include new servers
+            elif not new_path: # Allow clearing the path
+                self.config['custom_servers_file'] = ''
+                save_config(self.config)
+                logging.info("Custom servers file path cleared.")
+                self.action_refresh_servers()
+            else:
+                logging.error(f"Invalid path or file type for custom servers file: {new_path}")
+                self.bell()
+
+        self.push_screen(
+            InputScreen("Enter path to custom servers JSON file:", default_value=current_path),
+            on_submit
+        )
 
     def launch_chat(self):
-        logging.info("Attempting to launch chat with all running servers")
+        logging.info("Attempting to launch chat with all available servers")
 
-        running_servers_with_urls = {
-            name: url for name, (_, url) in self.running_processes.items() if url
-        }
+        final_mcp_servers = {}
 
-        if not running_servers_with_urls:
+        # 1. Add running Smithery servers
+        for name, (_, url) in self.running_processes.items():
+            if url:
+                final_mcp_servers[name] = {"type": "streamable_http", "url": url}
+
+        # 2. Add servers from custom file
+        custom_file_path = self.config.get('custom_servers_file')
+        if custom_file_path and os.path.exists(custom_file_path):
+            try:
+                with open(custom_file_path, 'r') as f:
+                    custom_data = json.load(f)
+                    if isinstance(custom_data, dict) and "mcpServers" in custom_data:
+                        # Merge custom servers, overwriting duplicates if any
+                        final_mcp_servers.update(custom_data["mcpServers"])
+            except (json.JSONDecodeError, IOError) as e:
+                logging.error(f"Error reading custom servers file {custom_file_path}: {e}")
+                self.bell()
+
+        if not final_mcp_servers:
             self.bell()
-            logging.warning("Launch chat called but no running servers with URLs found.")
+            logging.warning("Launch chat called but no running or custom servers are available.")
             return
 
         def launch(model: str):
             if not model:
                 return
 
-            mcp_servers_config = {
-                "mcpServers": {
-                    server_name: {"type": "streamable_http", "url": url}
-                    for server_name, url in running_servers_with_urls.items()
-                }
-            }
+            # This is the final configuration object to be written to the temp file
+            final_config_for_ollmcp = {"mcpServers": final_mcp_servers}
 
             try:
                 with tempfile.NamedTemporaryFile(mode='w', delete=False, suffix='.json', prefix='mcp_servers_') as temp_config_file:
-                    json.dump(mcp_servers_config, temp_config_file, indent=2)
+                    json.dump(final_config_for_ollmcp, temp_config_file, indent=2)
                     temp_config_path = temp_config_file.name
 
                 terminal = self.config.get('terminal', 'konsole')
@@ -230,8 +312,6 @@ class MCPCentralTUI(App):
 
                 logging.info(f"Launching ollmcp with: terminal={terminal}, config={temp_config_path}, model={model}, host={ollama_host}")
 
-                # We can't easily clean up the temp file after Popen, but it's in the temp dir,
-                # so the OS will eventually clean it up. For a short-lived launcher, this is acceptable.
                 subprocess.Popen([terminal, '-e', 'ollmcp', '--servers-json', temp_config_path, '--model', model, '--host', ollama_host])
 
             except FileNotFoundError:
