@@ -6,11 +6,16 @@ from .config import load_config
 
 def run_smithery_command(cmd):
     try:
+        config = load_config()
+        client_name = config.get('smithery_client', 'claude')  # Default to 'claude'
+
         base_command = ['npx', '--yes', '@smithery/cli']
-        if cmd[0] == 'list' and cmd[1] == 'servers':
-            command = base_command + ['list', 'servers', '--client', 'ollmcp']
+
+        if cmd == ['list', 'servers']:
+            command = base_command + cmd + ['--client', client_name]
         else:
             command = base_command + cmd
+
         result = subprocess.run(command, capture_output=True, text=True, check=False, env=os.environ)
         if result.returncode != 0:
             raise RuntimeError(result.stderr or result.stdout)
