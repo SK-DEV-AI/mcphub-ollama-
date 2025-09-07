@@ -103,12 +103,11 @@ class StreamingManager:
                         tool_calls.append(tool)
         elif print_response:
             # Original rich.live console display
-                # Original rich.live console display
-                with Live(console=self.console, refresh_per_second=10, vertical_overflow='visible') as live:
-                    # Start with working display
-                    live.update(self._create_working_display())
+            with Live(console=self.console, refresh_per_second=10, vertical_overflow='visible') as live:
+                # Start with working display
+                live.update(self._create_working_display())
 
-                    async for chunk in stream:
+                async for chunk in stream:
                     # Capture metrics when chunk is done
                     extracted_metrics = extract_metrics(chunk)
                     if extracted_metrics:

@@ -1,0 +1,7 @@
+2025-09-07 13:58:50,215 - INFO - App mounted successfully.
+2025-09-07 13:58:50,216 - INFO - Keyring initialized.
+2025-09-07 13:58:50,216 - INFO - Action: Refreshing installed servers.
+2025-09-07 13:58:54,131 - INFO - Successfully fetched 1 servers from Smithery: ['No installed servers found for gemini-cli']
+2025-09-07 13:58:54,132 - INFO - Action: Refreshing registry with query: ''
+2025-09-07 13:58:54,357 - ERROR - Error refreshing registry: Failed to fetch from registry: 401 Client Error: Unauthorized for url: https://registry.smithery.ai/servers?q=
+2025-09-07 13:58:54,365 - INFO - Initial data refresh actions called.
