@@ -393,7 +393,7 @@ class MCPCentralTUI(App):
         logging.info(f"Starting server: {server}")
         env = self.get_env_for_server(server)
         process = subprocess.Popen(
-            ['npx', '@smithery/cli', 'run', server],
+            ['npx', '@smithery/cli', 'run', server, '--client', 'gemini-cli'],
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
             text=True,

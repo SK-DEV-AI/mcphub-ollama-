@@ -6,7 +6,9 @@ from .config import load_config
 
 def run_smithery_command(cmd):
     try:
-        command = ['npx', '--yes', '@smithery/cli'] + cmd
+        # All smithery commands need a client, so we'll hardcode one.
+        # This is just a namespace for smithery to store its files.
+        command = ['npx', '--yes', '@smithery/cli'] + cmd + ['--client', 'gemini-cli']
         result = subprocess.run(command, capture_output=True, text=True, check=False, env=os.environ)
         if result.returncode != 0:
             raise RuntimeError(result.stderr or result.stdout)
