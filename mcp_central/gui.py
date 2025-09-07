@@ -365,9 +365,13 @@ class MCPcentralGUI(QMainWindow):
             self.logs_text.setText("No server selected.")
 
 def main():
+    print("MCP Central GUI: Starting application...")
     app = QApplication(sys.argv)
+    print("MCP Central GUI: QApplication instance created.")
     window = MCPcentralGUI()
+    print("MCP Central GUI: MCPcentralGUI instance created.")
     window.show()
+    print("MCP Central GUI: window.show() called.")
     sys.exit(app.exec())
 
 if __name__ == '__main__':
