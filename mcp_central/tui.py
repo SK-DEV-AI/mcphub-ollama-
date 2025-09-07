@@ -1,0 +1,366 @@
+import subprocess
+import re
+import logging
+from textual.app import App, ComposeResult
+from textual.screen import Screen
+from textual.widgets import Header, Footer, DataTable, TabbedContent, TabPane, Button, Log, Input, Label
+from textual.containers import Horizontal, Vertical, Container
+from .utils import list_installed_servers, get_registry_servers, install_server, uninstall_server, get_server_env_vars
+from .config import load_config, get_secret, set_secret, delete_secret, is_secret, init_keyring
+import os
+
+logging.basicConfig(filename="mcp.log", level=logging.INFO, format='%(asctime)s - %(message)s')
+
+class InputScreen(Screen):
+    """A screen to get input from the user."""
+
+    def __init__(self, prompt_text: str, is_password: bool = False, default_value: str = "") -> None:
+        super().__init__()
+        self.prompt_text = prompt_text
+        self.is_password = is_password
+        self.default_value = default_value
+
+    def compose(self) -> ComposeResult:
+        yield Container(
+            Label(self.prompt_text),
+            Input(value=self.default_value, password=self.is_password, id="input_field"),
+            Button("Submit", id="submit_button"),
+            id="dialog"
+        )
+
+    def on_mount(self) -> None:
+        self.query_one("#input_field").focus()
+
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        if event.button.id == "submit_button":
+            value = self.query_one("#input_field").value
+            self.dismiss(value)
+
+    def on_input_submitted(self, event: Input.Submitted) -> None:
+        self.dismiss(event.value)
+
+
+class MCPCentralTUI(App):
+    """A Textual application to manage MCP servers."""
+
+    BINDINGS = [
+        ("d", "toggle_dark", "Toggle dark mode"),
+        ("r", "refresh_servers", "Refresh Installed"),
+        ("f5", "refresh_registry", "Refresh Registry"),
+        ("q", "quit", "Quit"),
+    ]
+
+    def __init__(self):
+        super().__init__()
+        self.running_processes = {}  # server_name: (process, url)
+        self.server_logs = {} # server_name: logs
+        self.selected_server = None
+        self.selected_registry_server = None
+        self.config = load_config()
+
+    def compose(self) -> ComposeResult:
+        """Create child widgets for the app."""
+        yield Header()
+        with TabbedContent(initial="installed"):
+            with TabPane("Installed Servers", id="installed"):
+                with Horizontal():
+                    yield DataTable(id="server_table")
+                    with Vertical(id="installed_buttons"):
+                        yield Button("Start", id="start_button", disabled=True)
+                        yield Button("Stop", id="stop_button", disabled=True)
+                        yield Button("View Logs", id="logs_button", disabled=True)
+                        yield Button("Uninstall", id="uninstall_button", disabled=True)
+                        yield Button("Launch Chat", id="launch_chat_button", disabled=True)
+            with TabPane("Registry", id="registry"):
+                with Vertical():
+                    yield Input(placeholder="Search registry...", id="registry_search")
+                    yield DataTable(id="registry_table")
+                    yield Button("Install Server", id="install_button", disabled=True)
+            with TabPane("Environment", id="env"):
+                yield DataTable(id="env_table")
+                with Horizontal():
+                    yield Button("Set Value", id="set_env_button", disabled=True)
+                    yield Button("Clear Value", id="clear_env_button", disabled=True)
+            with TabPane("Logs", id="logs"):
+                yield Log(id="log_view")
+        yield Footer()
+
+    def on_mount(self) -> None:
+        """Called when the app is mounted."""
+        logging.info("App started")
+        init_keyring()
+        self.action_refresh_servers()
+        self.set_interval(1, self.update_logs)
+        self.action_refresh_registry()
+
+    def on_data_table_row_selected(self, event: DataTable.RowSelected) -> None:
+        """Called when a row in the DataTable is selected."""
+        if event.data_table.id == "server_table":
+            if event.data_table.row_count > 0:
+                self.selected_server = event.data_table.get_row_at(event.cursor_row)[0]
+                self.update_installed_buttons()
+                self.update_env_tab()
+        elif event.data_table.id == "registry_table":
+            if event.data_table.row_count > 0:
+                self.selected_registry_server = event.data_table.get_row_at(event.cursor_row)[0]
+                self.query_one("#install_button").disabled = False
+        elif event.data_table.id == "env_table":
+            if event.data_table.row_count > 0:
+                self.query_one("#set_env_button").disabled = False
+                self.query_one("#clear_env_button").disabled = False
+
+
+    def update_installed_buttons(self):
+        if self.selected_server:
+            is_running = self.selected_server in self.running_processes
+            url = self.running_processes.get(self.selected_server, (None, None))[1]
+            self.query_one("#start_button").disabled = is_running
+            self.query_one("#stop_button").disabled = not is_running
+            self.query_one("#logs_button").disabled = False
+            self.query_one("#uninstall_button").disabled = is_running
+            self.query_one("#launch_chat_button").disabled = not is_running or not url
+        else:
+            self.query_one("#start_button").disabled = True
+            self.query_one("#stop_button").disabled = True
+            self.query_one("#logs_button").disabled = True
+            self.query_one("#uninstall_button").disabled = True
+            self.query_one("#launch_chat_button").disabled = True
+
+    def update_env_tab(self):
+        table = self.query_one("#env_table")
+        table.clear(columns=True)
+        self.query_one("#set_env_button").disabled = True
+        self.query_one("#clear_env_button").disabled = True
+        if self.selected_server:
+            table.add_columns("Variable", "Value")
+            required_vars = get_server_env_vars(self.selected_server)
+            for var in required_vars:
+                value = get_secret(self.selected_server, var)
+                display_value = "(hidden)" if is_secret(var) and value else value or ""
+                table.add_row(var, display_value)
+
+    def action_refresh_servers(self) -> None:
+        """An action to refresh the list of installed servers."""
+        logging.info("Refreshing servers")
+        table = self.query_one("#server_table")
+        table.clear(columns=True)
+        table.add_columns("Server Name", "Status")
+        servers = list_installed_servers()
+        for server in servers:
+            status = "Running" if server in self.running_processes else "Stopped"
+            table.add_row(server, status)
+        self.update_installed_buttons()
+
+    def on_input_submitted(self, event: Input.Submitted) -> None:
+        if event.input.id == "registry_search":
+            self.action_refresh_registry(event.value)
+
+    def action_refresh_registry(self, query=""):
+        logging.info(f"Refreshing registry with query: {query}")
+        table = self.query_one("#registry_table")
+        table.clear(columns=True)
+        table.add_columns("Name", "Description")
+        try:
+            servers = get_registry_servers(self.config.get('api_key'), query)
+            for server in servers:
+                table.add_row(server['qualifiedName'], server['description'])
+        except Exception as e:
+            logging.error(f"Error refreshing registry: {e}")
+            self.bell()
+            self.server_logs["registry_error"] = str(e)
+            self.selected_server = "registry_error"
+            self.view_logs()
+
+
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        """Called when a button is pressed."""
+        if event.button.id == "start_button":
+            self.start_server()
+        elif event.button.id == "stop_button":
+            self.stop_server()
+        elif event.button.id == "logs_button":
+            self.view_logs()
+        elif event.button.id == "install_button":
+            self.install_server_from_registry()
+        elif event.button.id == "uninstall_button":
+            self.uninstall_selected_server()
+        elif event.button.id == "set_env_button":
+            self.set_env_var()
+        elif event.button.id == "clear_env_button":
+            self.clear_env_var()
+        elif event.button.id == "launch_chat_button":
+            self.launch_chat()
+
+    def launch_chat(self):
+        logging.info(f"Attempting to launch chat for {self.selected_server}")
+        if not self.selected_server or self.selected_server not in self.running_processes:
+            return
+
+        server = self.selected_server
+        _process, url = self.running_processes[server]
+
+        if not url:
+            self.bell()
+            return
+
+        def launch(model: str):
+            if model:
+                terminal = self.config.get('terminal', 'konsole')
+                ollama_host = self.config.get('ollama_host', 'http://localhost:11434')
+                logging.info(f"Launching ollmcp with: terminal={terminal}, url={url}, model={model}, host={ollama_host}")
+                try:
+                    subprocess.Popen([terminal, '-e', 'ollmcp', '--mcp-server-url', url, '--model', model, '--host', ollama_host])
+                except FileNotFoundError:
+                    logging.error(f"Could not find terminal '{terminal}'.")
+                    self.bell()
+                    self.server_logs["chat_error"] = f"Could not find terminal '{terminal}'."
+                    self.selected_server = "chat_error"
+                    self.view_logs()
+                except Exception as e:
+                    logging.error(f"Failed to launch chat: {e}")
+                    self.bell()
+                    self.server_logs["chat_error"] = str(e)
+                    self.selected_server = "chat_error"
+                    self.view_logs()
+
+        self.push_screen(InputScreen("Enter Ollama Model name:", default_value="llama3"), launch)
+
+    def set_env_var(self):
+        env_table = self.query_one("#env_table")
+        if env_table.cursor_row < 0 or not self.selected_server:
+            return
+
+        var_name = env_table.get_row_at(env_table.cursor_row)[0]
+
+        def set_value(value: str):
+            logging.info(f"Setting env var {var_name} for {self.selected_server}")
+            set_secret(self.selected_server, var_name, value)
+            self.update_env_tab()
+
+        self.push_screen(
+            InputScreen(f"Enter value for {var_name}", is_secret(var_name)),
+            set_value
+        )
+
+    def clear_env_var(self):
+        env_table = self.query_one("#env_table")
+        if env_table.cursor_row < 0 or not self.selected_server:
+            return
+
+        var_name = env_table.get_row_at(env_table.cursor_row)[0]
+        logging.info(f"Clearing env var {var_name} for {self.selected_server}")
+        delete_secret(self.selected_server, var_name)
+        self.update_env_tab()
+
+    def get_env_for_server(self, server):
+        env = os.environ.copy()
+        required_vars = get_server_env_vars(server)
+        for var in required_vars:
+            value = get_secret(server, var)
+            if value:
+                env[var] = value
+        return env
+
+    def start_server(self):
+        if not self.selected_server:
+            return
+
+        server = self.selected_server
+        logging.info(f"Starting server: {server}")
+        env = self.get_env_for_server(server)
+        process = subprocess.Popen(
+            ['npx', '@smithery/cli', 'run', server],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            env=env,
+            bufsize=1,
+            universal_newlines=True
+        )
+        self.running_processes[server] = (process, None)
+        self.server_logs[server] = f"Starting server {server}...\n"
+        self.action_refresh_servers()
+
+    def stop_server(self):
+        if not self.selected_server or self.selected_server not in self.running_processes:
+            return
+
+        server = self.selected_server
+        logging.info(f"Stopping server: {server}")
+        process, _ = self.running_processes.pop(server)
+        process.terminate()
+        try:
+            process.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            process.kill()
+        self.action_refresh_servers()
+
+    def view_logs(self):
+        if not self.selected_server:
+            return
+
+        log_view = self.query_one("#log_view")
+        log_view.clear()
+        log_view.write(self.server_logs.get(self.selected_server, "No logs for this server."))
+        self.query_one(TabbedContent).active = "logs"
+
+    def update_logs(self) -> None:
+        for server, (process, url) in list(self.running_processes.items()):
+            if process.stdout:
+                while True:
+                    line = process.stdout.readline()
+                    if line:
+                        self.server_logs[server] += line
+                        if url is None:
+                            match = re.search(r'Listening on (http://localhost:\d+)', line)
+                            if match:
+                                new_url = match.group(1)
+                                self.running_processes[server] = (process, new_url)
+                                self.action_refresh_servers()
+                        if self.selected_server == server and self.query_one(TabbedContent).active == "logs":
+                            self.query_one("#log_view").write(line)
+                    else:
+                        break
+
+    def install_server_from_registry(self):
+        if not self.selected_registry_server:
+            return
+
+        logging.info(f"Installing server: {self.selected_registry_server}")
+        try:
+            install_server(self.selected_registry_server)
+            self.action_refresh_servers()
+        except Exception as e:
+            logging.error(f"Error installing server: {e}")
+            self.bell()
+            self.server_logs["install_error"] = str(e)
+            self.selected_server = "install_error"
+            self.view_logs()
+
+    def uninstall_selected_server(self):
+        if not self.selected_server:
+            return
+
+        logging.info(f"Uninstalling server: {self.selected_server}")
+        try:
+            if self.selected_server in self.running_processes:
+                self.stop_server()
+            uninstall_server(self.selected_server)
+            self.action_refresh_servers()
+            self.selected_server = None
+            self.update_installed_buttons()
+            self.update_env_tab()
+        except Exception as e:
+            logging.error(f"Error uninstalling server: {e}")
+            self.bell()
+            self.server_logs["uninstall_error"] = str(e)
+            self.selected_server = "uninstall_error"
+            self.view_logs()
+
+
+def main():
+    app = MCPCentralTUI()
+    app.run()
+
+if __name__ == "__main__":
+    main()

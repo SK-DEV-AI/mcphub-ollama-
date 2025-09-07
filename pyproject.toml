@@ -15,7 +15,7 @@ requests = "^2.32.3"
 ollmcp = "^0.18.1"
 
 [tool.poetry.scripts]
-mcp-central-gui = "mcp_central.gui:main"
+mcp-central = "mcp_central.tui:main"
 
 [build-system]
 requires = ["poetry-core"]
