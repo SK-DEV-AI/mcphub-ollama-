@@ -34,7 +34,7 @@ def get_registry_servers(api_key, query=''):
     headers = {"Authorization": f"Bearer {api_key or config.get('api_key', '')}"}
     params = {"q": query}
     try:
-        response = requests.get(url, headers=headers, params=params)
+        response = requests.get(url, headers=headers, params=params, timeout=10)
         response.raise_for_status()
         data = response.json()
         return data.get('servers', [])
