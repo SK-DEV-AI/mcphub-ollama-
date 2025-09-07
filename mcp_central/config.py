@@ -21,8 +21,11 @@ SERVICE_NAME = 'mcp-central'
 def load_config():
     if CONFIG_FILE.exists():
         with open(CONFIG_FILE, 'r') as f:
-            return json.load(f)
-    return {"servers": [], "api_key": "", "ollama_host": "http://localhost:11434", "terminal": "konsole"}
+            config = json.load(f)
+            # Ensure new keys have default values if they are missing
+            config.setdefault('custom_servers_file', '')
+            return config
+    return {"servers": [], "api_key": "", "ollama_host": "http://localhost:11434", "terminal": "konsole", "custom_servers_file": ""}
 
 def save_config(config):
     CONFIG_DIR.mkdir(parents=True, exist_ok=True)
