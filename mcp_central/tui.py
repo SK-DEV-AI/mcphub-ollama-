@@ -171,7 +171,7 @@ class MCPCentralTUI(App):
         self.set_interval(1, self.update_logs)
         self.load_initial_data()
 
-    @work(exclusive=True)
+    @work(exclusive=True, thread=True)
     def load_initial_data(self) -> None:
         """Load initial server and registry data in the background."""
         logging.info("Background worker started for initial data load.")
@@ -346,7 +346,7 @@ class MCPCentralTUI(App):
         self.query_one("#main_container").add_class("hidden")
         self.refresh_servers_worker()
 
-    @work(exclusive=True, group="refresh")
+    @work(exclusive=True, group="refresh", thread=True)
     def refresh_servers_worker(self):
         logging.info("Worker refreshing installed servers list.")
         try:
@@ -397,7 +397,7 @@ class MCPCentralTUI(App):
         self.query_one("#main_container").add_class("hidden")
         self.refresh_registry_worker(query)
 
-    @work(exclusive=True, group="refresh")
+    @work(exclusive=True, group="refresh", thread=True)
     def refresh_registry_worker(self, query: str):
         logging.info(f"Worker refreshing registry with query: '{query}'")
         if not self.config.get('api_key'):
