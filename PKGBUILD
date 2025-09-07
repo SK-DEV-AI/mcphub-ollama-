@@ -8,10 +8,6 @@ url="https://github.com/SK-DEV-AI/mcphub-ollama-.git"
 license=('MIT')
 depends=(
     'python'
-    'python-pyqt6'
-    'python-textual'
-    'python-keyring'
-    'python-requests'
     'kwallet'
     'nodejs'
     'ollama'
@@ -35,13 +31,9 @@ build() {
 package() {
     cd "$srcdir/$pkgname"
 
-    # Install our application's wheel. We use --no-deps because pacman
-    # is handling the dependencies listed in the 'depends' array.
-    pip install --root="$pkgdir" --no-deps --prefix=/usr dist/*.whl
-
-    # Now, use pip to install ONLY the missing dependency (ollmcp) from PyPI
-    # into the same system-wide site-packages directory.
-    pip install --root="$pkgdir" --prefix=/usr ollmcp
+    # Install our application's wheel. Pip will handle installing all Python
+    # dependencies declared in the wheel, including the bundled mcp-client-for-ollama.
+    pip install --root="$pkgdir" --prefix=/usr dist/*.whl
 
     # Install .desktop and icon, and fix the icon path
     install -Dm644 assets/mcp-central.desktop "$pkgdir/usr/share/applications/$pkgname.desktop"

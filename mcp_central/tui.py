@@ -5,7 +5,7 @@ import json
 import tempfile
 from textual.app import App, ComposeResult
 from textual.screen import Screen
-from textual.widgets import Header, Footer, DataTable, TabbedContent, TabPane, Button, Log, Input, Label, LoadingIndicator
+from textual.widgets import Header, Footer, DataTable, TabbedContent, TabPane, Button, Log, Input, Label, LoadingIndicator, Switch
 from textual.containers import Horizontal, Vertical, Container
 from rich.panel import Panel
 from .utils import list_installed_servers, get_registry_servers, install_server, uninstall_server, get_server_env_vars
@@ -56,6 +56,93 @@ class InputScreen(Screen):
         self.dismiss(event.value)
 
 
+class ChatSettingsScreen(Screen):
+    """A screen to manage chat settings."""
+
+    def compose(self) -> ComposeResult:
+        yield Vertical(
+            Label("Chat Settings", id="settings_title"),
+            Horizontal(Label("Retain Context:"), Switch(value=self.app.retain_context, id="retain_context")),
+            Horizontal(Label("Thinking Mode:"), Switch(value=self.app.thinking_mode, id="thinking_mode")),
+            Horizontal(Label("Show Thinking:"), Switch(value=self.app.show_thinking, id="show_thinking")),
+            Horizontal(Label("Show Tool Execution:"), Switch(value=self.app.show_tool_execution, id="show_tool_execution")),
+            Horizontal(Label("Show Metrics:"), Switch(value=self.app.show_metrics, id="show_metrics")),
+            Horizontal(Label("Human-in-the-Loop:"), Switch(value=self.app.hil_manager.is_enabled(), id="hil_switch")),
+            Button("Clear Chat History", id="clear_history_button"),
+            Button("Configure Tools", id="configure_tools_button"),
+            Button("Back", id="back_button"),
+            id="settings_dialog"
+        )
+
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        if event.button.id == "back_button":
+            self.app.pop_screen()
+        elif event.button.id == "configure_tools_button":
+            self.app.push_screen(ToolSelectionScreen())
+        elif event.button.id == "clear_history_button":
+            self.app.chat_history = []
+            self.app.query_one("#chat_log").clear()
+            self.app.notify("Chat history cleared.")
+
+    def on_switch_changed(self, event: Switch.Changed) -> None:
+        if event.switch.id == "retain_context":
+            self.app.retain_context = event.value
+            self.app.notify(f"Context retention set to {event.value}")
+        elif event.switch.id == "thinking_mode":
+            self.app.thinking_mode = event.value
+            self.app.notify(f"Thinking mode set to {event.value}")
+        elif event.switch.id == "show_thinking":
+            self.app.show_thinking = event.value
+            self.app.notify(f"Show thinking set to {event.value}")
+        elif event.switch.id == "show_tool_execution":
+            self.app.show_tool_execution = event.value
+            self.app.notify(f"Show tool execution set to {event.value}")
+        elif event.switch.id == "show_metrics":
+            self.app.show_metrics = event.value
+            self.app.notify(f"Show metrics set to {event.value}")
+        elif event.switch.id == "hil_switch":
+            self.app.hil_manager.set_enabled(event.value)
+            self.app.notify(f"Human-in-the-Loop set to {event.value}")
+
+
+class ToolSelectionScreen(Screen):
+    """A screen to enable/disable tools."""
+
+    def compose(self) -> ComposeResult:
+        yield DataTable(id="tool_selection_table")
+        yield Button("Back", id="back_button")
+
+    def on_mount(self) -> None:
+        table = self.query_one(DataTable)
+        table.add_columns("Enabled", "Tool Name", "Server")
+
+        all_tools = self.app.tool_manager.get_available_tools()
+        enabled_tools = self.app.tool_manager.get_enabled_tools()
+
+        for tool in all_tools:
+            server_name = tool.name.split('.')[0]
+            is_enabled = enabled_tools.get(tool.name, False)
+            table.add_row("✅" if is_enabled else "❌", tool.name, server_name)
+
+    def on_data_table_row_selected(self, event: DataTable.RowSelected) -> None:
+        """Toggle the selected tool."""
+        table = event.data_table
+        row_index = event.cursor_row
+        tool_name = table.get_cell_at((row_index, 1))
+
+        current_status = self.app.tool_manager.get_enabled_tools().get(tool_name, False)
+        new_status = not current_status
+        self.app.tool_manager.set_tool_status(tool_name, new_status)
+        self.app.server_connector.set_tool_status(tool_name, new_status) # Also update connector
+
+        table.update_cell_at((row_index, 0), "✅" if new_status else "❌")
+        self.app.notify(f"Tool '{tool_name}' set to {new_status}")
+
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        if event.button.id == "back_button":
+            self.app.pop_screen()
+
+
 class MCPCentralTUI(App):
     """A Textual application to manage MCP servers."""
 
@@ -87,6 +174,12 @@ class MCPCentralTUI(App):
         self.hil_manager = HumanInTheLoopManager(console=self.console)
         self.chat_history = []
         self.chat_sessions = {}
+        # ollmcp feature flags
+        self.retain_context = True
+        self.thinking_mode = True
+        self.show_thinking = False
+        self.show_tool_execution = True
+        self.show_metrics = False
 
     def compose(self) -> ComposeResult:
         """Create child widgets for the app."""
@@ -118,14 +211,17 @@ class MCPCentralTUI(App):
             with TabPane("Logs", id="logs"):
                 yield Log(id="log_view")
             with TabPane("Chat", id="chat"):
-                yield Log(id="chat_log")
-                yield Input(placeholder="Enter your query...", id="chat_input")
+                with Vertical(id="chat_container"):
+                    yield Log(id="chat_log")
+                    with Horizontal():
+                        yield Input(placeholder="Enter your query...", id="chat_input")
+                        yield Button("Settings", id="chat_settings_button")
         yield Footer()
 
     async def load_initial_data(self):
         """Load servers and registry data in the background."""
-        self.action_refresh_servers()
-        self.action_refresh_registry()
+        await self.action_refresh_servers()
+        await self.action_refresh_registry()
         await self.query_one(LoadingIndicator).remove()
 
     def on_mount(self) -> None:
@@ -184,12 +280,8 @@ class MCPCentralTUI(App):
             self.query_one("#logs_button").disabled = True
             self.query_one("#uninstall_button").disabled = True
 
-        # Update "Launch Chat" button based on any running server or custom servers
-        any_server_running_with_url = any(
-            url for _, url in self.running_processes.values() if url
-        )
-        custom_file_exists = self.config.get('custom_servers_file') and os.path.exists(self.config['custom_servers_file'])
-        self.query_one("#launch_chat_button").disabled = not (any_server_running_with_url or custom_file_exists)
+        # Launch chat should always be available.
+        self.query_one("#launch_chat_button").disabled = False
 
     def update_env_tab(self):
         table = self.query_one("#env_table")
@@ -204,13 +296,13 @@ class MCPCentralTUI(App):
                 display_value = "(hidden)" if is_secret(var) and value else value or ""
                 table.add_row(var, display_value)
 
-    def get_all_servers(self) -> list[str]:
+    async def get_all_servers(self) -> list[str]:
         """Gets a unified list of servers from Smithery CLI and the custom JSON file."""
         servers = set()
         smithery_servers = []
         try:
             # Get servers from Smithery
-            smithery_servers = list_installed_servers()
+            smithery_servers = await list_installed_servers()
             servers.update(smithery_servers)
             logging.info(f"Successfully fetched {len(smithery_servers)} servers from Smithery: {smithery_servers}")
         except RuntimeError as e:
@@ -247,14 +339,14 @@ class MCPCentralTUI(App):
 
         return sorted(list(servers))
 
-    def action_refresh_servers(self) -> None:
+    async def action_refresh_servers(self) -> None:
         """An action to refresh the list of installed servers."""
         logging.info("Action: Refreshing installed servers.")
         table = self.query_one("#server_table")
         table.clear(columns=True)
         table.add_columns("Server Name", "Status", "Source")
 
-        all_servers = self.get_all_servers()
+        all_servers = await self.get_all_servers()
         # The command might return a single-element list with a message, filter that out.
         if len(all_servers) == 1 and "No installed servers found" in all_servers[0]:
             all_servers = []
@@ -273,7 +365,7 @@ class MCPCentralTUI(App):
 
     async def on_input_submitted(self, event: Input.Submitted) -> None:
         if event.input.id == "registry_search":
-            self.action_refresh_registry(event.value)
+            await self.action_refresh_registry(event.value)
         elif event.input.id == "chat_input":
             query = event.value
             event.input.clear()
@@ -303,7 +395,7 @@ class MCPCentralTUI(App):
 
             model = self.model_manager.get_current_model()
             model_options = {} # Simplified for now
-            
+
             chat_params = {
                 "model": model,
                 "messages": messages,
@@ -312,10 +404,18 @@ class MCPCentralTUI(App):
                 "options": model_options
             }
 
+            # Add thinking parameter if thinking mode is enabled
+            if self.thinking_mode:
+                chat_params["think"] = True
+
             stream = await self.ollama.chat(**chat_params)
-            
+
             response_text, tool_calls, metrics = await self.streaming_manager.process_streaming_response(
-                stream, print_response=True, thinking_mode=False, show_thinking=False, show_metrics=False
+                stream,
+                print_response=True,
+                thinking_mode=self.thinking_mode,
+                show_thinking=self.show_thinking,
+                show_metrics=self.show_metrics
             )
 
             if tool_calls:
@@ -324,13 +424,13 @@ class MCPCentralTUI(App):
                     tool_name = tool.function.name
                     tool_args = tool.function.arguments
                     server_name, actual_tool_name = tool_name.split('.', 1) if '.' in tool_name else (None, tool_name)
-                    
+
                     if not server_name or server_name not in self.chat_sessions:
                         log.write(f"[red]Error: Unknown server for tool {tool_name}[/red]")
                         continue
 
                     log.write(f"Calling tool: {tool_name} with args: {tool_args}")
-                    
+
                     result = await self.chat_sessions[server_name].call_tool(actual_tool_name, tool_args)
                     tool_response = f"{result.content[0].text}"
                     log.write(f"Tool response: {tool_response}")
@@ -352,15 +452,15 @@ class MCPCentralTUI(App):
 
         except Exception as e:
             logging.error(f"Error processing chat query: {e}", exc_info=True)
-            log.write(Panel(f"[bold red]Error:[/bold red] {str(e)}", title="Exception", border_style="red"))
+            log.write(f"[bold red]An error occurred:[/bold red]\n{e}")
 
-    def action_refresh_registry(self, query=""):
+    async def action_refresh_registry(self, query=""):
         logging.info(f"Action: Refreshing registry with query: '{query}'")
         table = self.query_one("#registry_table")
         table.clear(columns=True)
         table.add_columns("Name", "Description")
         try:
-            servers = get_registry_servers(self.config.get('api_key'), query)
+            servers = await get_registry_servers(self.config.get('api_key'), query)
             logging.info(f"Successfully fetched {len(servers)} servers from registry.")
             for server in servers:
                 table.add_row(server['qualifiedName'], server['description'])
@@ -394,6 +494,8 @@ class MCPCentralTUI(App):
             self.set_custom_servers_file()
         elif event.button.id == "set_api_key_button":
             self.action_set_api_key()
+        elif event.button.id == "chat_settings_button":
+            self.push_screen(ChatSettingsScreen())
 
     def action_set_api_key(self):
         """Shows a screen to set the Smithery API key."""
@@ -403,7 +505,7 @@ class MCPCentralTUI(App):
             self.config['api_key'] = key
             save_config(self.config)
             logging.info("API key has been set.")
-            self.action_refresh_registry()
+            self.run_worker(self.action_refresh_registry(), exclusive=True)
 
         self.push_screen(
             InputScreen("Enter your Smithery Registry API Key:", is_password=True, default_value=current_key),
@@ -468,7 +570,25 @@ class MCPCentralTUI(App):
             self.model_manager.set_model(model)
             self.run_worker(self.connect_and_start_chat(final_mcp_servers), exclusive=True)
 
-        self.push_screen(InputScreen("Enter Ollama Model name:", default_value="llama3"), launch)
+        async def show_model_selection():
+            """Worker to fetch models and then show the input screen."""
+            log = self.query_one("#chat_log")
+            log.clear()
+            log.write("Fetching available Ollama models...")
+            try:
+                models_list = await self.ollama.list()
+                model_names = [model['name'] for model in models_list['models']]
+                log.write("Available models:\n" + "\n".join(f"- {name}" for name in model_names))
+                prompt_text = "Enter the name of the model to use:"
+                default_model = "llama3" if "llama3" in model_names else (model_names[0] if model_names else "")
+            except Exception as e:
+                log.write(f"[bold red]Could not fetch Ollama models:[/bold red] {e}")
+                prompt_text = "Could not fetch models. Enter model name manually:"
+                default_model = "llama3"
+
+            self.push_screen(InputScreen(prompt_text, default_value=default_model), launch)
+
+        self.run_worker(show_model_selection)
 
     async def connect_and_start_chat(self, server_configs):
         """Connect to servers and switch to chat tab."""
@@ -589,10 +709,20 @@ class MCPCentralTUI(App):
         if not self.selected_registry_server:
             return
 
-        logging.info(f"Installing server: {self.selected_registry_server}")
+        server_to_install = self.selected_registry_server
+        logging.info(f"Starting worker to install server: {server_to_install}")
+        self.run_worker(self.install_worker(server_to_install), exclusive=True)
+
+    async def install_worker(self, server_name: str):
+        """Worker to install a server and refresh the list."""
+        log_view = self.query_one("#log_view")
+        self.query_one(TabbedContent).active = "logs"
+        log_view.clear()
+        log_view.write(f"Installing {server_name}...")
         try:
-            install_server(self.selected_registry_server)
-            self.action_refresh_servers()
+            await install_server(server_name)
+            log_view.write(f"Successfully installed {server_name}.")
+            await self.action_refresh_servers()
         except Exception as e:
             logging.error(f"Error installing server: {e}")
             self.bell()
@@ -604,12 +734,22 @@ class MCPCentralTUI(App):
         if not self.selected_server:
             return
 
-        logging.info(f"Uninstalling server: {self.selected_server}")
+        server_to_uninstall = self.selected_server
+        logging.info(f"Starting worker to uninstall server: {server_to_uninstall}")
+        self.run_worker(self.uninstall_worker(server_to_uninstall), exclusive=True)
+
+    async def uninstall_worker(self, server_name: str):
+        """Worker to uninstall a server and refresh the list."""
+        log_view = self.query_one("#log_view")
+        self.query_one(TabbedContent).active = "logs"
+        log_view.clear()
+        log_view.write(f"Uninstalling {server_name}...")
         try:
-            if self.selected_server in self.running_processes:
-                self.stop_server()
-            uninstall_server(self.selected_server)
-            self.action_refresh_servers()
+            if server_name in self.running_processes:
+                self.stop_server() # This is synchronous, but should be fast
+            await uninstall_server(server_name)
+            log_view.write(f"Successfully uninstalled {server_name}.")
+            await self.action_refresh_servers()
             self.selected_server = None
             self.update_installed_buttons()
             self.update_env_tab()

@@ -1,49 +1,55 @@
-import subprocess
+import asyncio
 import re
-import requests
+import httpx
 import os
 from .config import load_config
 
-def run_smithery_command(cmd):
+async def run_smithery_command(cmd):
     try:
-        # All smithery commands need a client, so we'll hardcode one.
-        # This is just a namespace for smithery to store its files.
         command = ['npx', '--yes', '@smithery/cli'] + cmd + ['--client', 'gemini-cli']
-        result = subprocess.run(command, capture_output=True, text=True, check=False, env=os.environ)
-        if result.returncode != 0:
-            raise RuntimeError(result.stderr or result.stdout)
-        return result.stdout.strip()
+        process = await asyncio.create_subprocess_exec(
+            *command,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+            env=os.environ
+        )
+        stdout, stderr = await process.communicate()
+
+        if process.returncode != 0:
+            raise RuntimeError((stderr or stdout).decode().strip())
+        return stdout.decode().strip()
     except FileNotFoundError:
         raise RuntimeError("Smithery CLI not found. Is Node.js and npx installed and in your PATH?")
     except Exception as e:
         raise RuntimeError(f"Smithery CLI error: {str(e)}")
 
-def list_installed_servers():
-    output = run_smithery_command(['list', 'servers'])
+async def list_installed_servers():
+    output = await run_smithery_command(['list', 'servers'])
     return output.splitlines() if output else []
 
-def install_server(package):
-    run_smithery_command(['install', package])
+async def install_server(package):
+    await run_smithery_command(['install', package])
 
-def uninstall_server(package):
-    run_smithery_command(['uninstall', package])
+async def uninstall_server(package):
+    await run_smithery_command(['uninstall', package])
 
-def get_registry_servers(api_key, query=''):
+async def get_registry_servers(api_key, query=''):
     config = load_config()
     url = "https://registry.smithery.ai/servers"
     headers = {"Authorization": f"Bearer {api_key or config.get('api_key', '')}"}
     params = {"q": query}
     try:
-        response = requests.get(url, headers=headers, params=params, timeout=10)
+        async with httpx.AsyncClient() as client:
+            response = await client.get(url, headers=headers, params=params, timeout=10)
         response.raise_for_status()
         data = response.json()
         return data.get('servers', [])
-    except requests.RequestException as e:
+    except httpx.RequestError as e:
         raise RuntimeError(f"Failed to fetch from registry: {e}")
 
-def get_server_env_vars(server_id):
+async def get_server_env_vars(server_id):
     try:
-        output = run_smithery_command(['inspect', server_id])
+        output = await run_smithery_command(['inspect', server_id])
         match = re.search(r'Required env: (.*)', output)
         if match:
             vars_str = match.group(1).strip()
