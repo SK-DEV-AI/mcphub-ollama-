@@ -808,43 +808,18 @@ class MCPClient:
         self.server_connector.enable_all_tools()
 
         # Reset context settings from the default configuration
-        if "contextSettings" in config_data:
-            if "retainContext" in config_data["contextSettings"]:
-                self.retain_context = config_data["contextSettings"]["retainContext"]
+        self.retain_context = config_data["contextSettings"]["retainContext"]
 
         # Reset model settings from the default configuration
-        if "modelSettings" in config_data:
-            if "thinkingMode" in config_data["modelSettings"]:
-                self.thinking_mode = config_data["modelSettings"]["thinkingMode"]
-            else:
-                # Default thinking mode to False if not specified
-                self.thinking_mode = False
-            if "showThinking" in config_data["modelSettings"]:
-                self.show_thinking = config_data["modelSettings"]["showThinking"]
-            else:
-                # Default show thinking to True if not specified
-                self.show_thinking = True
+        self.thinking_mode = config_data["modelSettings"]["thinkingMode"]
+        self.show_thinking = config_data["modelSettings"]["showThinking"]
 
         # Reset display settings from the default configuration
-        if "displaySettings" in config_data:
-            if "showToolExecution" in config_data["displaySettings"]:
-                self.show_tool_execution = config_data["displaySettings"]["showToolExecution"]
-            else:
-                # Default show tool execution to True if not specified
-                self.show_tool_execution = True
-            if "showMetrics" in config_data["displaySettings"]:
-                self.show_metrics = config_data["displaySettings"]["showMetrics"]
-            else:
-                # Default show metrics to False if not specified
-                self.show_metrics = False
+        self.show_tool_execution = config_data["displaySettings"]["showToolExecution"]
+        self.show_metrics = config_data["displaySettings"]["showMetrics"]
 
         # Reset HIL settings from the default configuration
-        if "hilSettings" in config_data:
-            if "enabled" in config_data["hilSettings"]:
-                self.hil_manager.set_enabled(config_data["hilSettings"]["enabled"])
-            else:
-                # Default HIL to True if not specified
-                self.hil_manager.set_enabled(True)
+        self.hil_manager.set_enabled(config_data["hilSettings"]["enabled"])
 
         return True
 
