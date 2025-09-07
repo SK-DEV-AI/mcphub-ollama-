@@ -180,12 +180,19 @@ class MCPCentralTUI(App):
             try:
                 with open(custom_file_path, 'r') as f:
                     custom_data = json.load(f)
-                    # Expecting a dict of servers, like ollmcp's format
-                    if isinstance(custom_data, dict) and "mcpServers" in custom_data:
-                        custom_servers = custom_data["mcpServers"].keys()
-                        servers.update(custom_servers)
-            except (json.JSONDecodeError, IOError) as e:
-                error_message = f"Error reading custom servers file {custom_file_path}: {e}"
+
+                if not isinstance(custom_data, dict) or "mcpServers" not in custom_data:
+                    raise ValueError("JSON file must be an object with a top-level 'mcpServers' key.")
+
+                mcp_servers = custom_data["mcpServers"]
+                if not isinstance(mcp_servers, dict):
+                    raise ValueError("The 'mcpServers' key must contain a dictionary of server objects.")
+
+                custom_servers = mcp_servers.keys()
+                servers.update(custom_servers)
+
+            except (json.JSONDecodeError, IOError, ValueError) as e:
+                error_message = f"Error processing custom servers file {custom_file_path}: {e}"
                 logging.error(error_message)
                 self.bell()
                 self.server_logs["custom_file_error"] = error_message
