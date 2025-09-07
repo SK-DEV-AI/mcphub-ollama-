@@ -1,6 +1,8 @@
 import subprocess
 import re
 import logging
+import json
+import tempfile
 from textual.app import App, ComposeResult
 from textual.screen import Screen
 from textual.widgets import Header, Footer, DataTable, TabbedContent, TabPane, Button, Log, Input, Label
@@ -111,20 +113,24 @@ class MCPCentralTUI(App):
 
 
     def update_installed_buttons(self):
+        # Update context-sensitive buttons based on selected server
         if self.selected_server:
             is_running = self.selected_server in self.running_processes
-            url = self.running_processes.get(self.selected_server, (None, None))[1]
             self.query_one("#start_button").disabled = is_running
             self.query_one("#stop_button").disabled = not is_running
             self.query_one("#logs_button").disabled = False
             self.query_one("#uninstall_button").disabled = is_running
-            self.query_one("#launch_chat_button").disabled = not is_running or not url
         else:
             self.query_one("#start_button").disabled = True
             self.query_one("#stop_button").disabled = True
             self.query_one("#logs_button").disabled = True
             self.query_one("#uninstall_button").disabled = True
-            self.query_one("#launch_chat_button").disabled = True
+
+        # Update "Launch Chat" button based on any running server
+        any_server_running_with_url = any(
+            url for _, url in self.running_processes.values() if url
+        )
+        self.query_one("#launch_chat_button").disabled = not any_server_running_with_url
 
     def update_env_tab(self):
         table = self.query_one("#env_table")
@@ -192,36 +198,54 @@ class MCPCentralTUI(App):
             self.launch_chat()
 
     def launch_chat(self):
-        logging.info(f"Attempting to launch chat for {self.selected_server}")
-        if not self.selected_server or self.selected_server not in self.running_processes:
-            return
+        logging.info("Attempting to launch chat with all running servers")
 
-        server = self.selected_server
-        _process, url = self.running_processes[server]
+        running_servers_with_urls = {
+            name: url for name, (_, url) in self.running_processes.items() if url
+        }
 
-        if not url:
+        if not running_servers_with_urls:
             self.bell()
+            logging.warning("Launch chat called but no running servers with URLs found.")
             return
 
         def launch(model: str):
-            if model:
+            if not model:
+                return
+
+            mcp_servers_config = {
+                "mcpServers": {
+                    server_name: {"type": "streamable_http", "url": url}
+                    for server_name, url in running_servers_with_urls.items()
+                }
+            }
+
+            try:
+                with tempfile.NamedTemporaryFile(mode='w', delete=False, suffix='.json', prefix='mcp_servers_') as temp_config_file:
+                    json.dump(mcp_servers_config, temp_config_file, indent=2)
+                    temp_config_path = temp_config_file.name
+
                 terminal = self.config.get('terminal', 'konsole')
                 ollama_host = self.config.get('ollama_host', 'http://localhost:11434')
-                logging.info(f"Launching ollmcp with: terminal={terminal}, url={url}, model={model}, host={ollama_host}")
-                try:
-                    subprocess.Popen([terminal, '-e', 'ollmcp', '--mcp-server-url', url, '--model', model, '--host', ollama_host])
-                except FileNotFoundError:
-                    logging.error(f"Could not find terminal '{terminal}'.")
-                    self.bell()
-                    self.server_logs["chat_error"] = f"Could not find terminal '{terminal}'."
-                    self.selected_server = "chat_error"
-                    self.view_logs()
-                except Exception as e:
-                    logging.error(f"Failed to launch chat: {e}")
-                    self.bell()
-                    self.server_logs["chat_error"] = str(e)
-                    self.selected_server = "chat_error"
-                    self.view_logs()
+
+                logging.info(f"Launching ollmcp with: terminal={terminal}, config={temp_config_path}, model={model}, host={ollama_host}")
+
+                # We can't easily clean up the temp file after Popen, but it's in the temp dir,
+                # so the OS will eventually clean it up. For a short-lived launcher, this is acceptable.
+                subprocess.Popen([terminal, '-e', 'ollmcp', '--servers-json', temp_config_path, '--model', model, '--host', ollama_host])
+
+            except FileNotFoundError:
+                logging.error(f"Could not find terminal '{terminal}'.")
+                self.bell()
+                self.server_logs["chat_error"] = f"Could not find terminal '{terminal}'."
+                self.selected_server = "chat_error"
+                self.view_logs()
+            except Exception as e:
+                logging.error(f"Failed to launch chat: {e}")
+                self.bell()
+                self.server_logs["chat_error"] = str(e)
+                self.selected_server = "chat_error"
+                self.view_logs()
 
         self.push_screen(InputScreen("Enter Ollama Model name:", default_value="llama3"), launch)
 
