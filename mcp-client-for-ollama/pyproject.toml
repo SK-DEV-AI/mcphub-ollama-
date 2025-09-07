@@ -1,5 +1,5 @@
 [project]
-name = "mcp-client-for-ollama"
+name = "ollmcp"
 version = "0.18.1"
 description = "MCP Client for Ollama - A client for connecting to Model Context Protocol servers using Ollama"
 readme = "README.md"
