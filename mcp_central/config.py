@@ -2,6 +2,17 @@ import json
 from pathlib import Path
 import keyring
 import os
+import keyring.backends.fail
+
+def init_keyring():
+    """
+    Initializes the keyring backend. If D-Bus is not available, it sets
+    the backend to the 'fail' backend to prevent hanging.
+    """
+    if 'DBUS_SESSION_BUS_ADDRESS' not in os.environ:
+        print("Warning: D-Bus session address not found. Keyring will be disabled.")
+        kr = keyring.backends.fail.Keyring()
+        keyring.set_keyring(kr)
 
 CONFIG_DIR = Path.home() / '.config' / 'mcp-central'
 CONFIG_FILE = CONFIG_DIR / 'settings.json'
