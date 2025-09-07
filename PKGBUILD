@@ -11,6 +11,11 @@ depends=(
     'kwallet'
     'nodejs'
     'ollama'
+    'python-prompt-toolkit'
+    'python-rich'
+    'python-typer'
+    'python-httpx'
+    'python-keyring'
 )
 makedepends=(
     'git'
@@ -31,9 +36,11 @@ build() {
 package() {
     cd "$srcdir/$pkgname"
 
-    # Install our application's wheel. Pip will handle installing all Python
-    # dependencies declared in the wheel, including the bundled mcp-client-for-ollama.
-    pip install --root="$pkgdir" --prefix=/usr dist/*.whl
+    # Install the main application wheel without its dependencies, as pacman is handling them.
+    pip install --root="$pkgdir" --no-deps --prefix=/usr dist/*.whl
+
+    # Install PyPI-only dependencies that are not in the official Arch repos.
+    pip install --root="$pkgdir" --prefix=/usr mcp ollama
 
     # Install .desktop and icon, and fix the icon path
     install -Dm644 assets/mcp-central.desktop "$pkgdir/usr/share/applications/$pkgname.desktop"
