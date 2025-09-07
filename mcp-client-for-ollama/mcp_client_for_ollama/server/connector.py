@@ -126,6 +126,18 @@ class ServerConnector:
 
         return self.sessions, self.available_tools, self.enabled_tools
 
+    async def connect_with_config(self, server_configs: Dict[str, Any]) -> Tuple[dict, list, dict]:
+        """Connect to servers from a dictionary of configurations."""
+        all_servers = []
+        for name, config in server_configs.items():
+            server_dict = {'name': name, **config}
+            all_servers.append(server_dict)
+
+        for server in all_servers:
+            await self._connect_to_server(server)
+
+        return self.sessions, self.available_tools, self.enabled_tools
+
     async def _connect_to_server(self, server: Dict[str, Any]) -> bool:
         """Connect to a single MCP server
 

@@ -12,7 +12,7 @@ pyqt6 = "^6.7.0"
 textual = "^6.1.0"
 keyring = "^25.3.0"
 requests = "^2.32.3"
-ollmcp = "^0.18.1"
+mcp-client-for-ollama = {path = "mcp-client-for-ollama", develop = true}
 
 [tool.poetry.scripts]
 mcp-central = "mcp_central.tui:main"

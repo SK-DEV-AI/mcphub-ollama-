@@ -7,11 +7,22 @@ from textual.app import App, ComposeResult
 from textual.screen import Screen
 from textual.widgets import Header, Footer, DataTable, TabbedContent, TabPane, Button, Log, Input, Label
 from textual.containers import Horizontal, Vertical, Container
+from rich.panel import Panel
 from .utils import list_installed_servers, get_registry_servers, install_server, uninstall_server, get_server_env_vars
-from .config import load_config, get_secret, set_secret, delete_secret, is_secret, init_keyring
+from .config import load_config, save_config, get_secret, set_secret, delete_secret, is_secret, init_keyring
 import os
+import ollama
+from contextlib import AsyncExitStack
 
-logging.basicConfig(filename="mcp.log", level=logging.INFO, format='%(asctime)s - %(message)s')
+# Imports from the mcp-client-for-ollama codebase
+from mcp_client_for_ollama.server.connector import ServerConnector
+from mcp_client_for_ollama.models.manager import ModelManager
+from mcp_client_for_ollama.tools.manager import ToolManager
+from mcp_client_for_ollama.utils.streaming import StreamingManager
+from mcp_client_for_ollama.utils.tool_display import ToolDisplayManager
+from mcp_client_for_ollama.utils.hil_manager import HumanInTheLoopManager
+
+logging.basicConfig(filename="app.log", level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
 class InputScreen(Screen):
     """A screen to get input from the user."""
@@ -49,16 +60,30 @@ class MCPCentralTUI(App):
         ("d", "toggle_dark", "Toggle dark mode"),
         ("r", "refresh_servers", "Refresh Installed"),
         ("f5", "refresh_registry", "Refresh Registry"),
+        ("a", "set_api_key", "Set API Key"),
         ("q", "quit", "Quit"),
     ]
 
     def __init__(self):
         super().__init__()
+        # mcp-central state
         self.running_processes = {}  # server_name: (process, url)
         self.server_logs = {} # server_name: logs
         self.selected_server = None
         self.selected_registry_server = None
         self.config = load_config()
+
+        # ollmcp state and managers
+        self.exit_stack = AsyncExitStack()
+        self.ollama = ollama.AsyncClient(host=self.config.get('ollama_host', 'http://localhost:11434'))
+        self.server_connector = ServerConnector(self.exit_stack, self.console)
+        self.model_manager = ModelManager(console=self.console, default_model="llama3", ollama=self.ollama) # Hardcode default model for now
+        self.tool_manager = ToolManager(console=self.console, server_connector=self.server_connector)
+        self.streaming_manager = StreamingManager(console=self.console)
+        self.tool_display_manager = ToolDisplayManager(console=self.console)
+        self.hil_manager = HumanInTheLoopManager(console=self.console)
+        self.chat_history = []
+        self.chat_sessions = {}
 
     def compose(self) -> ComposeResult:
         """Create child widgets for the app."""
@@ -78,7 +103,9 @@ class MCPCentralTUI(App):
                 with Vertical():
                     yield Input(placeholder="Search registry...", id="registry_search")
                     yield DataTable(id="registry_table")
-                    yield Button("Install Server", id="install_button", disabled=True)
+                    with Horizontal():
+                        yield Button("Install Server", id="install_button", disabled=True)
+                        yield Button("Set API Key", id="set_api_key_button")
             with TabPane("Environment", id="env"):
                 yield DataTable(id="env_table")
                 with Horizontal():
@@ -86,15 +113,22 @@ class MCPCentralTUI(App):
                     yield Button("Clear Value", id="clear_env_button", disabled=True)
             with TabPane("Logs", id="logs"):
                 yield Log(id="log_view")
+            with TabPane("Chat", id="chat"):
+                yield Log(id="chat_log")
+                yield Input(placeholder="Enter your query...", id="chat_input")
         yield Footer()
 
     def on_mount(self) -> None:
         """Called when the app is mounted."""
-        logging.info("App started")
+        logging.info("App mounted successfully.")
         init_keyring()
+        logging.info("Keyring initialized.")
         self.action_refresh_servers()
         self.set_interval(1, self.update_logs)
         self.action_refresh_registry()
+        logging.info("Initial data refresh actions called.")
+        # Pass the textual log widget to the streaming manager now that it's mounted
+        self.streaming_manager.textual_log = self.query_one("#chat_log")
 
     def on_data_table_row_selected(self, event: DataTable.RowSelected) -> None:
         """Called when a row in the DataTable is selected."""
@@ -164,9 +198,12 @@ class MCPCentralTUI(App):
     def get_all_servers(self) -> list[str]:
         """Gets a unified list of servers from Smithery CLI and the custom JSON file."""
         servers = set()
+        smithery_servers = []
         try:
             # Get servers from Smithery
-            servers.update(list_installed_servers())
+            smithery_servers = list_installed_servers()
+            servers.update(smithery_servers)
+            logging.info(f"Successfully fetched {len(smithery_servers)} servers from Smithery: {smithery_servers}")
         except RuntimeError as e:
             logging.error(f"Error fetching Smithery servers: {e}")
             self.bell()
@@ -203,13 +240,17 @@ class MCPCentralTUI(App):
 
     def action_refresh_servers(self) -> None:
         """An action to refresh the list of installed servers."""
-        logging.info("Refreshing servers")
+        logging.info("Action: Refreshing installed servers.")
         table = self.query_one("#server_table")
         table.clear(columns=True)
         table.add_columns("Server Name", "Status", "Source")
 
-        smithery_servers = set(list_installed_servers())
         all_servers = self.get_all_servers()
+        # The command might return a single-element list with a message, filter that out.
+        if len(all_servers) == 1 and "No installed servers found" in all_servers[0]:
+            all_servers = []
+
+        smithery_servers = {s for s in all_servers if "No installed servers found" not in s} # Re-evaluate true smithery servers after filtering
 
         for server in all_servers:
             status = "Running" if server in self.running_processes else "N/A"
@@ -221,17 +262,97 @@ class MCPCentralTUI(App):
             table.add_row(server, status, source)
         self.update_installed_buttons()
 
-    def on_input_submitted(self, event: Input.Submitted) -> None:
+    async def on_input_submitted(self, event: Input.Submitted) -> None:
         if event.input.id == "registry_search":
             self.action_refresh_registry(event.value)
+        elif event.input.id == "chat_input":
+            query = event.value
+            event.input.clear()
+            self.query_one("#chat_log").write(f"> {query}")
+            await self.process_chat_query(query)
+
+    async def process_chat_query(self, query: str):
+        """Process a query using Ollama and available tools, adapted for Textual."""
+        log = self.query_one("#chat_log")
+        try:
+            messages = [{"role": "user", "content": query}]
+            # Note: Context retention from self.chat_history is not implemented here for simplicity
+            # but could be added by iterating over self.chat_history and appending messages.
+
+            enabled_tool_objects = self.tool_manager.get_enabled_tool_objects()
+            available_tools = [{
+                "type": "function",
+                "function": {
+                    "name": tool.name,
+                    "description": tool.description,
+                    "parameters": tool.inputSchema
+                }
+            } for tool in enabled_tool_objects]
+
+            if not available_tools:
+                log.write("[yellow]Warning: No tools are enabled. Model will respond without tool access.[/yellow]")
+
+            model = self.model_manager.get_current_model()
+            model_options = {} # Simplified for now
+
+            chat_params = {
+                "model": model,
+                "messages": messages,
+                "stream": True,
+                "tools": available_tools,
+                "options": model_options
+            }
+
+            stream = await self.ollama.chat(**chat_params)
+
+            response_text, tool_calls, metrics = await self.streaming_manager.process_streaming_response(
+                stream, print_response=True, thinking_mode=False, show_thinking=False, show_metrics=False
+            )
+
+            if tool_calls:
+                log.write("\n--- Tool Calls ---")
+                for tool in tool_calls:
+                    tool_name = tool.function.name
+                    tool_args = tool.function.arguments
+                    server_name, actual_tool_name = tool_name.split('.', 1) if '.' in tool_name else (None, tool_name)
+
+                    if not server_name or server_name not in self.chat_sessions:
+                        log.write(f"[red]Error: Unknown server for tool {tool_name}[/red]")
+                        continue
+
+                    log.write(f"Calling tool: {tool_name} with args: {tool_args}")
+
+                    result = await self.chat_sessions[server_name].call_tool(actual_tool_name, tool_args)
+                    tool_response = f"{result.content[0].text}"
+                    log.write(f"Tool response: {tool_response}")
+
+                    messages.append({
+                        "role": "tool",
+                        "content": tool_response,
+                        "name": tool_name
+                    })
+
+                chat_params_followup = {
+                    "model": model, "messages": messages, "stream": True, "options": model_options
+                }
+                stream = await self.ollama.chat(**chat_params_followup)
+                response_text, _, _ = await self.streaming_manager.process_streaming_response(stream)
+
+            self.chat_history.append({"query": query, "response": response_text})
+            log.write("\n---")
+
+        except Exception as e:
+            logging.error(f"Error processing chat query: {e}", exc_info=True)
+            log.write(Panel(f"[bold red]Error:[/bold red] {str(e)}", title="Exception", border_style="red"))
 
     def action_refresh_registry(self, query=""):
-        logging.info(f"Refreshing registry with query: {query}")
+        logging.info(f"Action: Refreshing registry with query: '{query}'")
         table = self.query_one("#registry_table")
         table.clear(columns=True)
         table.add_columns("Name", "Description")
         try:
             servers = get_registry_servers(self.config.get('api_key'), query)
+            logging.info(f"Successfully fetched {len(servers)} servers from registry.")
             for server in servers:
                 table.add_row(server['qualifiedName'], server['description'])
         except Exception as e:
@@ -262,6 +383,23 @@ class MCPCentralTUI(App):
             self.launch_chat()
         elif event.button.id == "set_custom_file_button":
             self.set_custom_servers_file()
+        elif event.button.id == "set_api_key_button":
+            self.action_set_api_key()
+
+    def action_set_api_key(self):
+        """Shows a screen to set the Smithery API key."""
+        current_key = self.config.get('api_key', '')
+
+        def on_submit(key: str):
+            self.config['api_key'] = key
+            save_config(self.config)
+            logging.info("API key has been set.")
+            self.action_refresh_registry()
+
+        self.push_screen(
+            InputScreen("Enter your Smithery Registry API Key:", is_password=True, default_value=current_key),
+            on_submit
+        )
 
     def set_custom_servers_file(self):
         """Opens a prompt to set the path for the custom servers JSON file."""
@@ -318,36 +456,28 @@ class MCPCentralTUI(App):
         def launch(model: str):
             if not model:
                 return
-
-            # This is the final configuration object to be written to the temp file
-            final_config_for_ollmcp = {"mcpServers": final_mcp_servers}
-
-            try:
-                with tempfile.NamedTemporaryFile(mode='w', delete=False, suffix='.json', prefix='mcp_servers_') as temp_config_file:
-                    json.dump(final_config_for_ollmcp, temp_config_file, indent=2)
-                    temp_config_path = temp_config_file.name
-
-                terminal = self.config.get('terminal', 'konsole')
-                ollama_host = self.config.get('ollama_host', 'http://localhost:11434')
-
-                logging.info(f"Launching ollmcp with: terminal={terminal}, config={temp_config_path}, model={model}, host={ollama_host}")
-
-                subprocess.Popen([terminal, '-e', 'ollmcp', '--servers-json', temp_config_path, '--model', model, '--host', ollama_host])
-
-            except FileNotFoundError:
-                logging.error(f"Could not find terminal '{terminal}'.")
-                self.bell()
-                self.server_logs["chat_error"] = f"Could not find terminal '{terminal}'."
-                self.selected_server = "chat_error"
-                self.view_logs()
-            except Exception as e:
-                logging.error(f"Failed to launch chat: {e}")
-                self.bell()
-                self.server_logs["chat_error"] = str(e)
-                self.selected_server = "chat_error"
-                self.view_logs()
+            self.model_manager.set_model(model)
+            self.run_worker(self.connect_and_start_chat(final_mcp_servers), exclusive=True)
 
         self.push_screen(InputScreen("Enter Ollama Model name:", default_value="llama3"), launch)
+
+    async def connect_and_start_chat(self, server_configs):
+        """Connect to servers and switch to chat tab."""
+        log = self.query_one("#chat_log")
+        log.clear()
+        log.write("Connecting to servers...")
+        try:
+            # This logic is adapted from ollmcp's connect_to_servers
+            sessions, available_tools, enabled_tools = await self.server_connector.connect_with_config(server_configs)
+            self.chat_sessions = sessions
+            self.tool_manager.set_available_tools(available_tools)
+            self.tool_manager.set_enabled_tools(enabled_tools)
+            log.write("Connection successful. Ready to chat.")
+            self.query_one(TabbedContent).active = "chat"
+            self.query_one("#chat_input").focus()
+        except Exception as e:
+            logging.error(f"Failed to connect to servers for chat: {e}", exc_info=True)
+            log.write(Panel(f"[bold red]Failed to connect to servers:[/bold red]\n{e}", title="Connection Error"))
 
     def set_env_var(self):
         env_table = self.query_one("#env_table")

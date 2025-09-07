@@ -14,13 +14,15 @@ from .metrics import display_metrics, extract_metrics
 class StreamingManager:
     """Manages streaming responses for Ollama API calls"""
 
-    def __init__(self, console):
+    def __init__(self, console, textual_log=None):
         """Initialize the streaming manager
 
         Args:
             console: Rich console for output
+            textual_log: Optional Textual Log widget for output
         """
         self.console = console
+        self.textual_log = textual_log
 
     def _create_working_display(self):
         """Create a display showing working status with spinner"""
@@ -73,12 +75,40 @@ class StreamingManager:
         showing_working = True  # Track if we're still showing the working display
         metrics = None  # Store metrics from final chunk
 
-        if print_response:
-            with Live(console=self.console, refresh_per_second=10, vertical_overflow='visible') as live:
-                # Start with working display
-                live.update(self._create_working_display())
+        if print_response and self.textual_log:
+            # Simplified streaming for Textual Log widget
+            async for chunk in stream:
+                # Capture metrics when chunk is done
+                extracted_metrics = extract_metrics(chunk)
+                if extracted_metrics:
+                    metrics = extracted_metrics
 
-                async for chunk in stream:
+                # Handle thinking content by writing it to the log
+                if (thinking_mode and hasattr(chunk, 'message') and
+                    hasattr(chunk.message, 'thinking') and chunk.message.thinking):
+                    # For Textual, we can just stream the thinking part directly
+                    self.textual_log.write(chunk.message.thinking)
+                    thinking_content += chunk.message.thinking # Still accumulate for context
+
+                # Handle regular content
+                if (hasattr(chunk, 'message') and hasattr(chunk.message, 'content') and
+                    chunk.message.content):
+                    self.textual_log.write(chunk.message.content)
+                    accumulated_text += chunk.message.content
+
+                # Handle tool calls
+                if (hasattr(chunk, 'message') and hasattr(chunk.message, 'tool_calls') and
+                    chunk.message.tool_calls):
+                    for tool in chunk.message.tool_calls:
+                        tool_calls.append(tool)
+        elif print_response:
+            # Original rich.live console display
+                # Original rich.live console display
+                with Live(console=self.console, refresh_per_second=10, vertical_overflow='visible') as live:
+                    # Start with working display
+                    live.update(self._create_working_display())
+
+                    async for chunk in stream:
                     # Capture metrics when chunk is done
                     extracted_metrics = extract_metrics(chunk)
                     if extracted_metrics:
