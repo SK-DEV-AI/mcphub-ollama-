@@ -8,7 +8,7 @@ from textual.app import App, ComposeResult
 from textual.screen import Screen
 from textual.widgets import Header, Footer, DataTable, TabbedContent, TabPane, Button, Log, Input, Label, Static, LoadingIndicator
 from textual.containers import Horizontal, Vertical, Container
-from textual.worker import work
+from textual import work
 from .utils import list_installed_servers, get_registry_servers, install_server, uninstall_server, get_server_env_vars
 from .config import load_config, save_config, get_secret, set_secret, delete_secret, is_secret, init_keyring
 import os
