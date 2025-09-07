@@ -11,11 +11,6 @@ depends=(
     'kwallet'
     'nodejs'
     'ollama'
-    'python-prompt-toolkit'
-    'python-rich'
-    'python-typer'
-    'python-httpx'
-    'python-keyring'
 )
 makedepends=(
     'git'
@@ -36,11 +31,19 @@ build() {
 package() {
     cd "$srcdir/$pkgname"
 
-    # Install the main application wheel without its dependencies, as pacman is handling them.
+    # Install the main application wheel without its dependencies.
     pip install --root="$pkgdir" --no-deps --prefix=/usr dist/*.whl
 
-    # Install PyPI-only dependencies that are not in the official Arch repos.
-    pip install --root="$pkgdir" --prefix=/usr mcp ollama
+    # Install all Python dependencies directly with pip into the package.
+    # This is the most robust method to avoid system vs. PyPI naming conflicts.
+    pip install --root="$pkgdir" --prefix=/usr \
+        mcp \
+        ollama \
+        "prompt-toolkit>=3.0.0" \
+        rich \
+        typer \
+        httpx \
+        "keyring>=25.0.0"
 
     # Install .desktop and icon, and fix the icon path
     install -Dm644 assets/mcp-central.desktop "$pkgdir/usr/share/applications/$pkgname.desktop"
