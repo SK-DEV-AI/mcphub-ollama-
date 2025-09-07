@@ -8,10 +8,6 @@ readme = "README.md"
 
 [tool.poetry.dependencies]
 python = "^3.10"
-pyqt6 = "^6.7.0"
-textual = "^6.1.0"
-keyring = "^25.3.0"
-requests = "^2.32.3"
 mcp-client-for-ollama = {path = "mcp-client-for-ollama", develop = true}
 
 [tool.poetry.scripts]
