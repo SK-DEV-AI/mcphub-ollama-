@@ -6,11 +6,7 @@ from .config import load_config
 
 def run_smithery_command(cmd):
     try:
-        base_command = ['npx', '--yes', '@smithery/cli']
-        if cmd[0] == 'list' and cmd[1] == 'servers':
-            command = base_command + ['list', 'servers', '--client', 'ollmcp']
-        else:
-            command = base_command + cmd
+        command = ['npx', '--yes', '@smithery/cli'] + cmd
         result = subprocess.run(command, capture_output=True, text=True, check=False, env=os.environ)
         if result.returncode != 0:
             raise RuntimeError(result.stderr or result.stdout)
