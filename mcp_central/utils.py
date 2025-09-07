@@ -16,11 +16,8 @@ def run_smithery_command(cmd):
         raise RuntimeError(f"Smithery CLI error: {str(e)}")
 
 def list_installed_servers():
-    try:
-        output = run_smithery_command(['list', 'servers'])
-        return output.splitlines() if output else []
-    except RuntimeError:
-        return []
+    output = run_smithery_command(['list', 'servers'])
+    return output.splitlines() if output else []
 
 def install_server(package):
     run_smithery_command(['install', package])

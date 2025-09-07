@@ -122,8 +122,9 @@ class MCPCentralTUI(App):
                 try:
                     source = table.get_cell_at((table.cursor_row, 2))
                     is_custom_server = (source == "Custom")
-                except Exception:
-                    # In case of any issue, assume not a custom server for safety
+                except IndexError:
+                    # This can happen if the table is refreshed and the cursor is out of bounds
+                    # before the next selection event. Safest to assume not custom.
                     is_custom_server = False
 
         # Update context-sensitive buttons based on selected server
@@ -162,8 +163,16 @@ class MCPCentralTUI(App):
 
     def get_all_servers(self) -> list[str]:
         """Gets a unified list of servers from Smithery CLI and the custom JSON file."""
-        # Get servers from Smithery
-        servers = set(list_installed_servers())
+        servers = set()
+        try:
+            # Get servers from Smithery
+            servers.update(list_installed_servers())
+        except RuntimeError as e:
+            logging.error(f"Error fetching Smithery servers: {e}")
+            self.bell()
+            self.server_logs["smithery_error"] = str(e)
+            self.selected_server = "smithery_error"
+            self.view_logs()
 
         # Get servers from custom file
         custom_file_path = self.config.get('custom_servers_file')
@@ -176,8 +185,12 @@ class MCPCentralTUI(App):
                         custom_servers = custom_data["mcpServers"].keys()
                         servers.update(custom_servers)
             except (json.JSONDecodeError, IOError) as e:
-                logging.error(f"Error reading custom servers file {custom_file_path}: {e}")
+                error_message = f"Error reading custom servers file {custom_file_path}: {e}"
+                logging.error(error_message)
                 self.bell()
+                self.server_logs["custom_file_error"] = error_message
+                self.selected_server = "custom_file_error"
+                self.view_logs()
 
         return sorted(list(servers))
 
