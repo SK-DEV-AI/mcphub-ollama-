@@ -7,8 +7,9 @@ from PyQt6.QtWidgets import (QApplication, QMainWindow, QSplitter, QListWidget, 
                              QTableWidgetItem, QInputDialog, QMessageBox, QMenu, QHeaderView, QProgressBar)
 from PyQt6.QtCore import Qt, QProcess, QProcessEnvironment
 from PyQt6.QtGui import QColor, QPalette
+from keyring.errors import NoKeyringError
 
-from .config import load_config, save_config, get_secret, set_secret, delete_secret, is_secret
+from .config import load_config, save_config, get_secret, set_secret, delete_secret, is_secret, init_keyring
 from .utils import list_installed_servers, install_server, uninstall_server, get_registry_servers, get_server_env_vars
 
 class MCPcentralGUI(QMainWindow):
@@ -366,13 +367,25 @@ class MCPcentralGUI(QMainWindow):
 
 def main():
     print("MCP Central GUI: Starting application...")
+    init_keyring()
     app = QApplication(sys.argv)
     print("MCP Central GUI: QApplication instance created.")
-    window = MCPcentralGUI()
-    print("MCP Central GUI: MCPcentralGUI instance created.")
-    window.show()
-    print("MCP Central GUI: window.show() called.")
-    sys.exit(app.exec())
+
+    try:
+        window = MCPcentralGUI()
+        print("MCP Central GUI: MCPcentralGUI instance created.")
+        window.show()
+        print("MCP Central GUI: window.show() called.")
+        sys.exit(app.exec())
+    except NoKeyringError:
+        error_msg = ("Failed to find a supported keychain backend.\n\n"
+                     "Please ensure you have a secret storage service "
+                     "(like GNOME Keyring or KDE Wallet) installed and running.\n\n"
+                     "The application cannot continue without it.")
+        # Need a temporary widget to show the message box if the main window failed
+        error_widget = QWidget()
+        QMessageBox.critical(error_widget, "Keychain Error", error_msg)
+        sys.exit(1)
 
 if __name__ == '__main__':
     main()
