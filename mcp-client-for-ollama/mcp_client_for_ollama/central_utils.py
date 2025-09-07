@@ -2,7 +2,6 @@ import asyncio
 import re
 import httpx
 import os
-from .config import load_config
 
 async def run_smithery_command(cmd):
     try:
@@ -28,12 +27,13 @@ async def list_installed_servers():
     return output.splitlines() if output else []
 
 async def install_server(package):
-    await run_smithery_command(['install', package])
+    return await run_smithery_command(['install', package])
 
 async def uninstall_server(package):
-    await run_smithery_command(['uninstall', package])
+    return await run_smithery_command(['uninstall', package])
 
 async def get_registry_servers(api_key, query=''):
+    from .central_config import load_config
     config = load_config()
     url = "https://registry.smithery.ai/servers"
     headers = {"Authorization": f"Bearer {api_key or config.get('api_key', '')}"}

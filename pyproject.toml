@@ -15,7 +15,7 @@ requests = "^2.32.3"
 mcp-client-for-ollama = {path = "mcp-client-for-ollama", develop = true}
 
 [tool.poetry.scripts]
-mcp-central = "mcp_central.tui:main"
+mcp-central = "mcp_client_for_ollama.cli:run_cli"
 
 [build-system]
 requires = ["poetry-core"]

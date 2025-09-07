@@ -22,10 +22,17 @@ def load_config():
     if CONFIG_FILE.exists():
         with open(CONFIG_FILE, 'r') as f:
             config = json.load(f)
-            # Ensure new keys have default values if they are missing
-            config.setdefault('custom_servers_file', '')
-            return config
-    return {"servers": [], "api_key": "", "ollama_host": "http://localhost:11434", "terminal": "konsole", "custom_servers_file": ""}
+    else:
+        config = {}
+
+    # Ensure all keys have default values if they are missing
+    config.setdefault('servers', [])
+    config.setdefault('api_key', "")
+    config.setdefault('ollama_host', "http://localhost:11434")
+    config.setdefault('terminal', "konsole")
+    config.setdefault('custom_servers_file', '')
+    config.setdefault('fetch_registry_on_startup', True)
+    return config
 
 def save_config(config):
     CONFIG_DIR.mkdir(parents=True, exist_ok=True)

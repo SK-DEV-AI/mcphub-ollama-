@@ -1,6 +1,7 @@
 """MCP Client for Ollama - A TUI client for interacting with Ollama models and MCP servers"""
 import asyncio
 import os
+import subprocess
 from contextlib import AsyncExitStack
 from typing import List, Optional
 
@@ -12,9 +13,11 @@ from rich.markdown import Markdown
 from rich.panel import Panel
 from rich.text import Text
 import ollama
+from rich.table import Table
 
 from . import __version__
 from .config.manager import ConfigManager
+from .utils import install_server, uninstall_server, list_installed_servers, get_registry_servers
 from .utils.version import check_for_updates
 from .utils.constants import DEFAULT_CLAUDE_CONFIG, DEFAULT_MODEL, DEFAULT_OLLAMA_HOST, DEFAULT_COMPLETION_STYLE
 from .server.connector import ServerConnector
@@ -52,6 +55,8 @@ class MCPClient:
         self.hil_manager = HumanInTheLoopManager(console=self.console)
         # Store server and tool data
         self.sessions = {}  # Dict to store multiple sessions
+        self.running_processes = {} # For server management
+        self.server_logs = {} # For server management
         # UI components
         self.chat_history = []  # Add chat history list to store interactions
         # Command completer for interactive prompts
@@ -506,6 +511,18 @@ class MCPClient:
                     self.hil_manager.toggle()
                     continue
 
+                if query.lower().startswith('!servers'):
+                    await self.manage_servers_interactive()
+                    continue
+
+                if query.lower().startswith('!install'):
+                    self.console.print("[yellow]Coming soon: Install a server by name.[/yellow]")
+                    continue
+
+                if query.lower().startswith('!uninstall'):
+                    self.console.print("[yellow]Coming soon: Uninstall a server by name.[/yellow]")
+                    continue
+
                 # Check if query is too short and not a special command
                 if len(query.strip()) < 5:
                     self.console.print("[yellow]Query must be at least 5 characters long.[/yellow]")
@@ -544,6 +561,147 @@ class MCPClient:
             except Exception as e:
                 self.console.print(Panel(f"[bold red]Error:[/bold red] {str(e)}", title="Exception", border_style="red", expand=False))
                 self.console.print_exception()
+
+    async def manage_servers_interactive(self):
+        """Display an interactive screen to manage MCP servers."""
+        while True:
+            self.clear_console()
+            self.console.print(Panel("[bold green]MCP Server Management[/bold green]"))
+
+            # Display Installed Servers
+            installed_table = Table(title="Installed Servers")
+            installed_table.add_column("Status", style="yellow")
+            installed_table.add_column("Name", style="cyan")
+            try:
+                installed_servers = await list_installed_servers()
+                if installed_servers and "No installed servers found" not in installed_servers[0]:
+                    for server in installed_servers:
+                        status = "[green]Running[/green]" if server in self.running_processes else "[dim]Stopped[/dim]"
+                        installed_table.add_row(status, server)
+                else:
+                    installed_table.add_row("[dim]N/A[/dim]", "[dim]No servers installed.[/dim]")
+            except Exception as e:
+                installed_table.add_row(f"[red]Error: {e}[/red]")
+            self.console.print(installed_table)
+
+            # Display Registry Servers
+            registry_table = Table(title="Available from Registry (smithery.ai)")
+            registry_table.add_column("Name", style="green")
+            registry_table.add_column("Description")
+            try:
+                api_key = self.config_manager.get_config().get('api_key', '')
+                registry_servers = await get_registry_servers(api_key)
+                for server in registry_servers[:10]: # Show top 10 for brevity
+                    registry_table.add_row(server.get('qualifiedName'), server.get('description'))
+            except Exception as e:
+                registry_table.add_row(f"[red]Error fetching registry: {e}[/red]", "")
+
+            self.console.print(registry_table)
+
+            self.console.print("\n[bold]Commands:[/bold] `start|stop|install|uninstall|logs <name>`, `back`")
+            command = await self.get_user_input("Server Command")
+
+            if command.lower() in ['back', 'q', 'quit']:
+                break
+
+            parts = command.split()
+            if len(parts) != 2:
+                self.console.print("[red]Invalid command format.[/red]")
+                await asyncio.sleep(2)
+                continue
+
+            action, server_name = parts
+
+            try:
+                if action.lower() == 'install':
+                    with self.console.status(f"[cyan]Installing {server_name}...[/cyan]"):
+                        await install_server(server_name)
+                    self.console.print(f"[green]'{server_name}' installed successfully.[/green]")
+                elif action.lower() == 'uninstall':
+                    with self.console.status(f"[cyan]Uninstalling {server_name}...[/cyan]"):
+                        await uninstall_server(server_name)
+                    self.console.print(f"[green]'{server_name}' uninstalled successfully.[/green]")
+                elif action.lower() == 'start':
+                    self.start_server(server_name)
+                elif action.lower() == 'stop':
+                    self.stop_server(server_name)
+                elif action.lower() == 'logs':
+                    self.view_logs(server_name)
+                else:
+                    self.console.print(f"[red]Unknown command: {action}[/red]")
+
+                # Automatically reload servers to reflect changes in the main app
+                await self.reload_servers()
+
+            except Exception as e:
+                self.console.print(f"[red]Error: {e}[/red]")
+
+            self.console.print("[dim]Refreshing in 3 seconds...[/dim]")
+            await asyncio.sleep(3)
+
+        self.clear_console()
+        self.display_available_tools()
+        self.display_current_model()
+
+    async def _log_updater(self):
+        """A background task to continuously read logs from running servers."""
+        while True:
+            for server_name, process in self.running_processes.items():
+                if process.stdout:
+                    try:
+                        line = process.stdout.readline()
+                        if line:
+                            self.server_logs[server_name] += line
+                    except Exception:
+                        pass # Ignore errors from non-blocking reads
+            await asyncio.sleep(1)
+
+    def start_server(self, server_name: str):
+        """Starts an MCP server as a background process."""
+        if server_name in self.running_processes:
+            self.console.print(f"[yellow]Server '{server_name}' is already running.[/yellow]")
+            return
+
+        self.console.print(f"[cyan]Starting server: {server_name}...[/cyan]")
+        # Note: This doesn't yet support environment variables.
+        process = subprocess.Popen(
+            ['npx', '@smithery/cli', 'run', server_name, '--client', 'gemini-cli'],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            bufsize=1,
+            universal_newlines=True
+        )
+        self.running_processes[server_name] = process
+        self.server_logs[server_name] = f"--- Logs for {server_name} ---\n"
+        self.console.print(f"[green]Server '{server_name}' started.[/green]")
+
+    def stop_server(self, server_name: str):
+        """Stops a running MCP server."""
+        if server_name not in self.running_processes:
+            self.console.print(f"[yellow]Server '{server_name}' is not running.[/yellow]")
+            return
+
+        self.console.print(f"[cyan]Stopping server: {server_name}...[/cyan]")
+        process = self.running_processes.pop(server_name)
+        process.terminate()
+        try:
+            process.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            process.kill()
+        self.console.print(f"[green]Server '{server_name}' stopped.[/green]")
+
+    def view_logs(self, server_name: str):
+        """Displays the logs for a running server."""
+        if server_name not in self.server_logs:
+            self.console.print(f"[yellow]No logs found for server '{server_name}'.[/yellow]")
+            return
+
+        self.clear_console()
+        self.console.print(Panel(self.server_logs[server_name], title=f"Logs for {server_name}"))
+        self.console.print("\n[bold]Press Enter to return...[/bold]")
+        input() # Wait for user to press Enter
+
 
     def print_help(self):
         """Print available commands"""
@@ -1003,11 +1161,13 @@ async def async_main(mcp_server, mcp_server_url, servers_json, auto_discovery, m
             if not os.path.exists(server_path):
                 console.print(f"[bold red]Error: Server script not found: {server_path}[/bold red]")
                 return
+    log_updater_task = asyncio.create_task(client._log_updater())
     try:
         await client.connect_to_servers(mcp_server, mcp_server_url, config_path, auto_discovery_final)
         client.auto_load_default_config()
         await client.chat_loop()
     finally:
+        log_updater_task.cancel()
         await client.cleanup()
 
 if __name__ == "__main__":
