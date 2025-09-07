@@ -2,3 +2,7 @@
 2025-09-07 06:16:03,304 - Refreshing servers
 2025-09-07 06:16:05,325 - Refreshing registry with query:
 2025-09-07 06:16:05,529 - Error refreshing registry: Failed to fetch from registry: 401 Client Error: Unauthorized for url: https://registry.smithery.ai/servers?q=
+2025-09-07 16:27:19,632 - App started
+2025-09-07 16:27:19,633 - Refreshing servers
+2025-09-07 16:28:22,591 - App started
+2025-09-07 16:28:22,592 - Refreshing servers
