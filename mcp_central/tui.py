@@ -6,8 +6,9 @@ import tempfile
 import webbrowser
 from textual.app import App, ComposeResult
 from textual.screen import Screen
-from textual.widgets import Header, Footer, DataTable, TabbedContent, TabPane, Button, Log, Input, Label, Static
+from textual.widgets import Header, Footer, DataTable, TabbedContent, TabPane, Button, Log, Input, Label, Static, LoadingIndicator
 from textual.containers import Horizontal, Vertical, Container
+from textual.worker import work
 from .utils import list_installed_servers, get_registry_servers, install_server, uninstall_server, get_server_env_vars
 from .config import load_config, save_config, get_secret, set_secret, delete_secret, is_secret, init_keyring
 import os
@@ -76,6 +77,15 @@ class APIKeyScreen(Screen):
 class MCPCentralTUI(App):
     """A Textual application to manage MCP servers."""
 
+    CSS = """
+    #main_container.hidden {
+        display: none;
+    }
+    #loading_container {
+        align: center middle;
+    }
+    """
+
     BINDINGS = [
         ("d", "toggle_dark", "Toggle dark mode"),
         ("r", "refresh_servers", "Refresh Installed"),
@@ -94,29 +104,35 @@ class MCPCentralTUI(App):
     def compose(self) -> ComposeResult:
         """Create child widgets for the app."""
         yield Header()
-        with TabbedContent(initial="installed"):
-            with TabPane("Installed Servers", id="installed"):
-                with Horizontal():
-                    yield DataTable(id="server_table")
-                    with Vertical(id="installed_buttons"):
-                        yield Button("Start", id="start_button", disabled=True)
-                        yield Button("Stop", id="stop_button", disabled=True)
-                        yield Button("View Logs", id="logs_button", disabled=True)
-                        yield Button("Uninstall", id="uninstall_button", disabled=True)
-                        yield Button("Launch Chat", id="launch_chat_button", disabled=True)
-                        yield Button("Set Custom File", id="set_custom_file_button")
-            with TabPane("Registry", id="registry"):
-                with Vertical():
-                    yield Input(placeholder="Search registry...", id="registry_search")
-                    yield DataTable(id="registry_table")
-                    yield Button("Install Server", id="install_button", disabled=True)
-            with TabPane("Environment", id="env"):
-                yield DataTable(id="env_table")
-                with Horizontal():
-                    yield Button("Set Value", id="set_env_button", disabled=True)
-                    yield Button("Clear Value", id="clear_env_button", disabled=True)
-            with TabPane("Logs", id="logs"):
-                yield Log(id="log_view")
+        yield Container(
+            LoadingIndicator(),
+            Static("Loading, please wait...", id="loading_label"),
+            id="loading_container"
+        )
+        with Container(id="main_container", classes="hidden"):
+            with TabbedContent(initial="installed"):
+                with TabPane("Installed Servers", id="installed"):
+                    with Horizontal():
+                        yield DataTable(id="server_table")
+                        with Vertical(id="installed_buttons"):
+                            yield Button("Start", id="start_button", disabled=True)
+                            yield Button("Stop", id="stop_button", disabled=True)
+                            yield Button("View Logs", id="logs_button", disabled=True)
+                            yield Button("Uninstall", id="uninstall_button", disabled=True)
+                            yield Button("Launch Chat", id="launch_chat_button", disabled=True)
+                            yield Button("Set Custom File", id="set_custom_file_button")
+                with TabPane("Registry", id="registry"):
+                    with Vertical():
+                        yield Input(placeholder="Search registry...", id="registry_search")
+                        yield DataTable(id="registry_table")
+                        yield Button("Install Server", id="install_button", disabled=True)
+                with TabPane("Environment", id="env"):
+                    yield DataTable(id="env_table")
+                    with Horizontal():
+                        yield Button("Set Value", id="set_env_button", disabled=True)
+                        yield Button("Clear Value", id="clear_env_button", disabled=True)
+                with TabPane("Logs", id="logs"):
+                    yield Log(id="log_view")
         yield Footer()
 
     def on_mount(self) -> None:
@@ -151,11 +167,76 @@ class MCPCentralTUI(App):
 
     def finish_startup(self) -> None:
         """The rest of the startup sequence."""
-        logging.info("Finishing startup sequence.")
-        self.action_refresh_servers()
+        logging.info("Finishing startup sequence. Starting background worker.")
         self.set_interval(1, self.update_logs)
-        self.action_refresh_registry()
-        logging.info("Startup complete.")
+        self.load_initial_data()
+
+    @work(exclusive=True)
+    def load_initial_data(self) -> None:
+        """Load initial server and registry data in the background."""
+        logging.info("Background worker started for initial data load.")
+
+        # Fetch installed servers
+        try:
+            installed_servers = self.get_all_servers()
+            logging.info(f"Worker found {len(installed_servers)} installed servers.")
+        except Exception as e:
+            logging.error(f"Worker error fetching installed servers: {e}", exc_info=True)
+            installed_servers = [f"Error: {e}"]
+
+        # Fetch registry servers
+        try:
+            api_key = self.config.get('api_key')
+            if api_key:
+                registry_servers = get_registry_servers(api_key, "")
+                logging.info(f"Worker found {len(registry_servers)} registry servers.")
+            else:
+                registry_servers = []
+                logging.info("Worker skipping registry search, no API key.")
+        except Exception as e:
+            logging.error(f"Worker error fetching registry servers: {e}", exc_info=True)
+            registry_servers = [{"qualifiedName": f"Error: {e}", "description": ""}]
+
+        # Schedule UI update on the main thread
+        self.call_from_thread(self.update_ui_with_loaded_data, installed_servers, registry_servers)
+
+    def update_ui_with_loaded_data(self, installed_servers: list, registry_servers: list) -> None:
+        """Update the UI with data loaded from the background worker."""
+        logging.info("Updating UI with data from background worker.")
+
+        # Populate installed servers table
+        table = self.query_one("#server_table")
+        table.clear(columns=True)
+        table.add_columns("Server Name", "Status", "Source")
+        if installed_servers:
+            try:
+                smithery_servers = set(list_installed_servers()) # Re-list to determine source accurately
+                for server in installed_servers:
+                    if server.startswith("Error:"):
+                        table.add_row(server, "Error", "Error")
+                        continue
+                    status = "Running" if server in self.running_processes else "N/A"
+                    source = "Smithery" if server in smithery_servers else "Custom"
+                    if source == "Smithery":
+                        status = "Running" if server in self.running_processes else "Stopped"
+                    table.add_row(server, status, source)
+            except Exception as e:
+                logging.error(f"Error populating installed servers table: {e}", exc_info=True)
+                table.add_row(f"Error loading servers: {e}", "Error", "Error")
+
+
+        # Populate registry table
+        table = self.query_one("#registry_table")
+        table.clear(columns=True)
+        table.add_columns("Name", "Description")
+        if registry_servers:
+            for server in registry_servers:
+                table.add_row(server['qualifiedName'], server.get('description', ''))
+
+        # Hide loading indicator and show main content
+        self.query_one("#loading_container").display = False
+        self.query_one("#main_container").remove_class("hidden")
+        logging.info("UI update complete. Application is ready.")
 
 
     def on_data_table_row_selected(self, event: DataTable.RowSelected) -> None:
@@ -261,25 +342,38 @@ class MCPCentralTUI(App):
 
     def action_refresh_servers(self) -> None:
         """An action to refresh the list of installed servers."""
-        logging.info("Refreshing installed servers list.")
+        self.query_one("#loading_container").display = True
+        self.query_one("#main_container").add_class("hidden")
+        self.refresh_servers_worker()
+
+    @work(exclusive=True, group="refresh")
+    def refresh_servers_worker(self):
+        logging.info("Worker refreshing installed servers list.")
+        try:
+            installed_servers = self.get_all_servers()
+        except Exception as e:
+            installed_servers = [f"Error: {e}"]
+        self.call_from_thread(self.update_servers_table, installed_servers)
+
+    def update_servers_table(self, installed_servers: list) -> None:
+        """Update the installed servers table with new data."""
         table = self.query_one("#server_table")
         current_selection = self.selected_server
         table.clear(columns=True)
         table.add_columns("Server Name", "Status", "Source")
-
         try:
             smithery_servers = set(list_installed_servers())
-            all_servers = self.get_all_servers()
-
-            for server in all_servers:
+            for server in installed_servers:
+                if server.startswith("Error:"):
+                    table.add_row(server, "Error", "Error")
+                    continue
                 status = "Running" if server in self.running_processes else "N/A"
                 source = "Smithery" if server in smithery_servers else "Custom"
                 if source == "Smithery":
                     status = "Running" if server in self.running_processes else "Stopped"
                 table.add_row(server, status, source)
 
-            # Try to restore selection
-            if current_selection in all_servers:
+            if current_selection in installed_servers:
                 for i, row in enumerate(table.rows):
                     if row[0] == current_selection:
                         table.cursor_row = i
@@ -288,6 +382,8 @@ class MCPCentralTUI(App):
             logging.error(f"Failed to refresh servers table: {e}")
             self.notify("Could not refresh server list.", severity="error")
 
+        self.query_one("#loading_container").display = False
+        self.query_one("#main_container").remove_class("hidden")
         self.update_installed_buttons()
 
 
@@ -297,22 +393,37 @@ class MCPCentralTUI(App):
 
     def action_refresh_registry(self, query: str = "") -> None:
         """An action to refresh the list of registry servers."""
-        logging.info(f"Refreshing registry with query: '{query}'")
+        self.query_one("#loading_container").display = True
+        self.query_one("#main_container").add_class("hidden")
+        self.refresh_registry_worker(query)
+
+    @work(exclusive=True, group="refresh")
+    def refresh_registry_worker(self, query: str):
+        logging.info(f"Worker refreshing registry with query: '{query}'")
         if not self.config.get('api_key'):
-            self.notify("Smithery API key not set. Cannot search registry.", severity="warning")
+            self.call_from_thread(self.notify, "Smithery API key not set.", severity="warning")
+            self.call_from_thread(self.update_registry_table, [])
             return
 
-        table = self.query_one("#registry_table")
-        table.clear(columns=True)
-        table.add_columns("Name", "Description")
         try:
             servers = get_registry_servers(self.config.get('api_key'), query)
-            for server in servers:
-                table.add_row(server['qualifiedName'], server['description'])
+            self.call_from_thread(self.update_registry_table, servers)
         except Exception as e:
             error_msg = f"Error refreshing registry: {e}"
             logging.error(error_msg)
-            self.notify(error_msg, severity="error", timeout=10)
+            self.call_from_thread(self.notify, error_msg, severity="error", timeout=10)
+            self.call_from_thread(self.update_registry_table, [])
+
+    def update_registry_table(self, servers: list) -> None:
+        """Update the registry table with new data."""
+        table = self.query_one("#registry_table")
+        table.clear(columns=True)
+        table.add_columns("Name", "Description")
+        if servers:
+            for server in servers:
+                table.add_row(server['qualifiedName'], server.get('description', ''))
+        self.query_one("#loading_container").display = False
+        self.query_one("#main_container").remove_class("hidden")
 
 
     def on_button_pressed(self, event: Button.Pressed) -> None:
@@ -539,13 +650,13 @@ class MCPCentralTUI(App):
         logging.info(f"Installing server: {self.selected_registry_server}")
         try:
             install_server(self.selected_registry_server)
+            self.notify(f"Successfully installed {self.selected_registry_server}", severity="information")
             self.action_refresh_servers()
         except Exception as e:
-            logging.error(f"Error installing server: {e}")
-            self.bell()
-            self.server_logs["install_error"] = str(e)
-            self.selected_server = "install_error"
-            self.view_logs()
+            error_msg = f"Error installing server: {e}"
+            logging.error(error_msg, exc_info=True)
+            self.notify(error_msg, severity="error", timeout=10)
+
 
     def uninstall_selected_server(self):
         if not self.selected_server:
@@ -555,7 +666,7 @@ class MCPCentralTUI(App):
         try:
             if self.selected_server in self.running_processes:
                 self.stop_server()
-            uninstall_server(self.selected_server, self.config.get('api_key'))
+            uninstall_server(self.selected_server)
             self.notify(f"Successfully uninstalled {self.selected_server}", severity="information")
             self.action_refresh_servers()
             self.selected_server = None
