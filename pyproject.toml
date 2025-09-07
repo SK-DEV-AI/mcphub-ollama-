@@ -11,7 +11,12 @@ python = "^3.10"
 textual = {extras = ["dev"], version = "^0.67.0"}
 keyring = "^25.3.0"
 requests = "^2.32.3"
-ollmcp = {path = "mcp-client-for-ollama", develop = true}
+linkify-it-py = "^2.0.3"
+mcp = "~1.12.4"
+ollama = "~0.5.3"
+prompt-toolkit = "~3.0.51"
+rich = "~14.1.0"
+typer = {extras = ["all"], version = "~0.16.0"}
 
 [tool.poetry.scripts]
 mcp-central = "mcp_central.tui:main"
