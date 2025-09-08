@@ -8,15 +8,11 @@ readme = "README.md"
 
 [tool.poetry.dependencies]
 python = "^3.10"
-textual = {extras = ["dev"], version = "^0.67.0"}
+pyqt6 = "^6.7.0"
+textual = "^6.1.0"
 keyring = "^25.3.0"
 requests = "^2.32.3"
-linkify-it-py = "^2.0.3"
-mcp = "~1.12.4"
-ollama = "~0.5.3"
-prompt-toolkit = "~3.0.51"
-rich = "~14.1.0"
-typer = {extras = ["all"], version = "~0.16.0"}
+ollmcp = "^0.18.1"
 
 [tool.poetry.scripts]
 mcp-central = "mcp_central.tui:main"
